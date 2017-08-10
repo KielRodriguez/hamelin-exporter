@@ -1,3 +1,6 @@
+#!/usr/bin/python
+#coding=utf-8
+
 import fnmatch
 import os
 import re
@@ -5,22 +8,22 @@ import math
 import sys
 
 import pandas as pd
-import numpy as np
 
 from pykml import parser
+from pykml.factory import nsmap
 
 import psycopg2
+
+from kml2geojson import main
 
 if len(sys.argv) < 2:
     print("Necesitas especificar un directorio")
     print("python export.py data/")
     sys.exit()
 
-#TODO read variables from config file
-
-#rootDirectory = "downloadData"
 rootDirectory = sys.argv[1]
 
+#TODO read variables from config file
 csv_latitude_column = "latitud"
 csv_longitude_column = "longitud"
 csv_delimiter = ","
@@ -43,50 +46,71 @@ try:
     conn = psycopg2.connect("dbname='" + postgres_dbname + "' user='" + postgres_user + "' host='" + postgres_host + "'")
     conn.autocommit = True
 except:
-    print ("Error: postgres connection")
+    print ("Error en la conexión con postgres.")
     sys.exit()
 
 
-def buildPointSQL(lat="", lon="", coordinates=""):
-    query = "ST_SetSRID(ST_MakePoint("
-    if(coordinates!=""):
-        query += coordinates
-    elif(lat!="" and lon!=""):
-        query += str(lon) + "," + str(lat)
+def buildPointSQL(lon, lat):
+    return "ST_SetSRID(ST_MakePoint(" + str(lon) + "," + str(lat) + ")," + geometry_srid + ")"
 
-    query += ")," + geometry_srid + ")"
-    return query
 
-def buildLinestringSQL(coordinates):
-    #TODO
-    pass
+def createGeomFromKML(point=None, linestring=None, polygon=None):
+    if point is not None:
+        coords = point.split(",")
+        return buildPointSQL(coords[0].strip(), coords[1].strip())
+    elif linestring is not None:
+        query ="ST_GeomFromText('LINESTRING("
+        for line in linestring.split("\n"):
+            coords = line.split(",")
+            query += coords[0].strip() + " " + coords[1].strip() + ","
 
-def buildPolygonSQL(coordinates):
-    #TODO
-    pass
+        return query[0:-1] + ")', " + geometry_srid + ")"
+    elif polygon is not None:
+        query ="ST_GeomFromText('POLYGON(("
+        for line in polygon.split("\n"):
+            coords = line.split(",")
+            query += coords[0].strip() + " " + coords[1].strip() + ","
+
+        return query[0:-1] + "))', " + geometry_srid + ")"
+
 
 def buildDatasetNameFromURI(uri):
-    return uri.split("/")[-1].split(".")[0].replace("-","_").replace(" ","_")
+    return uri.split("/")[-1].split(".")[0].replace("-","_").replace(" ","_").lower()
 
 
+def getDataFromNode(node):
+    #TODO iterate all the nested childs to get all the data
+    pass
+
+namespace = {"ns": nsmap[None]}
 def processKML():
-    print("")
     print("**KML**")
     for file in kmlKmzList:
-        print("Working... " + file)
+        print("Procesando... " + file)
+
         with open(file) as f:
             try:
                 kml = parser.parse(f)
             except:
-                print("Error parseando el archivo: " + file + " --omitiendo")
+                print("Error parseando el archivo. --omitiendo\n")
                 continue
 
             cur = conn.cursor()
-
             root = kml.getroot()
 
+            # flags for columns created
+            pointColumn = False
+            polygonColumn = False
+            linestringColumn = False
+
             datasetName = buildDatasetNameFromURI(file)
-            sql = "CREATE TABLE " + datasetName + "(id serial, name text)"
+
+            pms = root.findall(".//ns:Placemark", namespaces=namespace)
+
+            # Get all values to create the table
+            # getDataFromNode(pms[0])
+
+            sql = "DROP TABLE IF EXISTS " + datasetName + ";CREATE TABLE " + datasetName + "(id serial, name text)"
 
             try:
                 cur.execute(sql)
@@ -95,88 +119,94 @@ def processKML():
                 print(sql)
                 continue
 
-            pointColumn = False
-            polygonColumn = False
-            linestringColumn = False
-
-            counter = 0
-            for pm in root.Document.Folder.iterchildren():
+            counter_points = 0
+            counter_linestring = 0
+            counter_polygon = 0
+            for pm in pms:
                 if hasattr(pm, 'Point'):
                     if not pointColumn:
-                        sql = "SELECT AddGeometryColumn('" + datasetName + "','" + geometry_column + "_point'," + geometry_srid + ",'POINT',2);"
-
-                        try:
-                            cur.execute(sql)
-                        except:
-                            print("Error creating the geometry column, postgis is enabled in the database ? ")
-                            print("Try: create extension postgis;")
-                            continue
-
-                        pointColumn = True
+                        if createGeometryColumn(cur, datasetName, "POINT", "_point"):
+                            pointColumn = True
+                        else: continue
 
                     sql = "INSERT INTO " + datasetName + "(name, " + geometry_column + "_point) VALUES ('"
-                    sql += pm.name + "'," + buildPointSQL(coordinates=pm.Point.coordinates) + ");"
+                    sql += pm.name + "'," + createGeomFromKML(point=pm.Point.coordinates.text) + ");"
 
                     try:
                         cur.execute(sql)
+                        counter_points += 1
                     except:
                         print("Error inserting in the table, skipping: " + sql)
                         continue
 
+
                 elif hasattr(pm, 'LineString'):
                     if not linestringColumn:
-                        sql = "SELECT AddGeometryColumn('" + datasetName + "','" + geometry_column + "_linestring'," + geometry_srid + ",'POINT',2);"
+                        if createGeometryColumn(cur, datasetName, "LINESTRING", "_linestring"):
+                            linestringColumn = True
+                        else: continue
 
-                        try:
-                            cur.execute(sql)
-                        except:
-                            print("Error creating the geometry column, postgis is enabled in the database ? ")
-                            print("Try: create extension postgis;")
-                            continue
+                    sql = "INSERT INTO " + datasetName + "(name, " + geometry_column + "_linestring) VALUES ('"
+                    sql += pm.name + "'," + createGeomFromKML(linestring=pm.LineString.coordinates.text) + ");"
 
-                        linestringColumn = True
-
-                    # TODO
+                    try:
+                        cur.execute(sql)
+                        counter_linestring += 1
+                    except:
+                        print("Error inserting in the table, skipping: " + sql)
+                        continue
 
                 elif hasattr(pm, 'Polygon'):
                     if not polygonColumn:
-                        sql = "SELECT AddGeometryColumn('" + datasetName + "','" + geometry_column + "_polygon'," + geometry_srid + ",'POINT',2);"
+                        if createGeometryColumn(cur, datasetName, "POLYGON", "_polygon"):
+                            polygonColumn = True
+                        else: continue
 
-                        try:
-                            cur.execute(sql)
-                        except:
-                            print("Error creating the geometry column, postgis is enabled in the database ? ")
-                            print("Try: create extension postgis;")
-                            continue
+                    sql = "INSERT INTO " + datasetName + "(name, " + geometry_column + "_polygon) VALUES ('"
+                    sql += pm.name + "'," + createGeomFromKML(polygon=pm.Polygon.outerBoundaryIs.LinearRing.coordinates.text) + ");"
 
-                        polygonColumn = True
+                    try:
+                        cur.execute(sql)
+                        counter_polygon += 1
+                    except:
+                        print("Error inserting in the table, skipping: " + sql)
+                        continue
 
-                    #TODO
+            print("Registros creados\n\tPuntos: {}\n\tLinestring: {}\n\tPolygon: {}\n".format(counter_points, counter_linestring, counter_polygon))
 
-                counter += 1
+def createGeometryColumn(cur, datasetName, geometry, suffixColumn=""):
+    sql = "SELECT AddGeometryColumn('{dataset}' , '{geometry_column}{suffixColumn}', {srid},'{geometry}',2)"
 
-            print("Registros creados: " + str(counter))
-            print("")
+    try:
+        cur.execute(sql.format(dataset=datasetName, geometry_column=geometry_column,suffixColumn=suffixColumn, srid=geometry_srid, geometry=geometry))
+        return True
+    except:
+        print("Error creando la geometria, esta postgis disponible en {} ? ".format(postgres_dbname), "Try: create extension postgis;")
+        return False
+
 
 def processCSV():
     print("")
     print("**CSV**")
+
+    sqlInsert = "INSERT INTO {dataset}{inputValues} VALUES ({data})"
     for file in csvFileList:
         with open(file) as f:
             headers = f.readline().rstrip().lower().split(csv_delimiter)
             f.close()
 
             if csv_latitude_column in headers and csv_longitude_column in headers:
-                print("Working csv: " + file)
+                print("Procesando... " + file)
                 cur = conn.cursor()
 
-                datasetName = file.split("/")[-1].split(".")[0].replace("-","_")
+                datasetName = buildDatasetNameFromURI(file)
 
                 dataset = pd.read_csv(file)
                 dataset.columns = map(str.lower, dataset.columns) # headers to lowercase
 
 
-                sql = "CREATE TABLE " + datasetName + "("
+                sql = "DROP TABLE IF EXISTS " + datasetName + ";"
+                sql += "CREATE TABLE " + datasetName + "("
                 inputValues = "("
                 for header in dataset.columns:
                     sql += header + " text,"
@@ -187,38 +217,28 @@ def processCSV():
 
                 try:
                     cur.execute(sql)
+                    print("Nueva tabla creada " + datasetName)
                 except:
-                    print("Error creando la tabla " + datasetName + " - omitiendo dataset.")
-                    print(sql)
+                    print("Error creando la tabla " + datasetName + " - omitiendo dataset.", sql)
                     continue
 
-                sql = "SELECT AddGeometryColumn('" + datasetName + "','" + geometry_column+ "'," + geometry_srid + ",'POINT',2);"
-
-                try:
-                    cur.execute(sql)
-                except:
-                    print("Error creating the geometry column, postgis is enabled in the database ? ")
-                    print("Try: create extension postgis;")
+                if not createGeometryColumn(cur, datasetName, "POINT"):
                     continue
-
-                print("Table created " + datasetName)
 
                 counter = 0
                 for index, row in dataset.iterrows():
                     if math.isnan(row[csv_latitude_column]) or math.isnan(row[csv_longitude_column]):
                         continue
 
-                    sql = "INSERT INTO " + datasetName + inputValues + " VALUES ("
+                    data = ""
                     for header in dataset.columns:
-                        sql += "'" + str(row[header]).rstrip() + "',"
+                        data += "'" + str(row[header]).rstrip() + "',"
+                    data += buildPointSQL(row[csv_longitude_column], row[csv_latitude_column])
 
-                    sql += buildPointSQL(lon=row[csv_longitude_column], lat=row[csv_latitude_column]) + ");"
-
-                    cur.execute(sql)
+                    cur.execute(sqlInsert.format(dataset=datasetName, inputValues=inputValues, data=data))
                     counter += 1
 
-                print("Registros creados: " + str(counter))
-                print("")
+                print("Registros creados: {}\n".format(counter))
 
 
 for root, dirnames, filenames in os.walk(rootDirectory):
@@ -247,5 +267,6 @@ print("")
 processCSV()
 processKML()
 
-print("")
 print("Done")
+
+#TODO create server and map view
