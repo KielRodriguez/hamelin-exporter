@@ -1,11 +1,11 @@
 #!/usr/bin/python
 #coding=utf-8
 
-import fnmatch
 import os
 import math
 import sys
 import subprocess
+import re
 
 from lxml import etree
 from lxml import objectify
@@ -30,8 +30,8 @@ postgres_host = os.getenv("POSTGRES_HOST") if os.getenv("POSTGRES_HOST") is not 
 postgres_password = os.getenv("POSTGRES_PASSWORD") if os.getenv("POSTGRES_PASSWORD") is not None else ""
 
 
-csv_latitude_column = "latitud"
-csv_longitude_column = "longitud"
+csv_latitude_column = "(latitude|latitud|lat)"
+csv_longitude_column = "(longitude|longitud|lng|long)"
 csv_delimiter = ","
 
 geometry_column = "the_geom"
@@ -214,8 +214,20 @@ def processCSV(file, datasetName):
     dataset = pd.read_csv(file)
     dataset.columns = map(str.lower, dataset.columns) # headers to lowercase
 
-    if csv_latitude_column in dataset.columns and csv_longitude_column in dataset.columns:
+    latitudColumn = None
+    longitudColumn = None
+    for column in dataset.columns:
+        if re.match(csv_latitude_column, column) is not None:
+            latitudColumn = column
+        elif re.match(csv_longitude_column, column) is not None:
+            longitudColumn = column
+
+
+    # if csv_latitude_column in dataset.columns and csv_longitude_column in dataset.columns:
+    if latitudColumn is not None and longitudColumn is not None:
         print("Procesando... " + file)
+        print("Using " + latitudColumn + " / " + longitudColumn)
+
         cur = conn.cursor()
 
         sql = "DROP TABLE IF EXISTS " + datasetName + ";"
@@ -241,21 +253,18 @@ def processCSV(file, datasetName):
         print("Cargando tabla...")
         counter = 0
         for index, row in dataset.iterrows():
-            if math.isnan(row[csv_latitude_column]) or math.isnan(row[csv_longitude_column]):
+            if math.isnan(row[longitudColumn]) or math.isnan(row[latitudColumn]):
                 print("Error en la linea " + str(index+2) + ". --omitiendo")
                 continue
 
             data = ""
             for header in dataset.columns:
                 data += "'" + str(row[header]).rstrip() + "',"
-            data += buildPointSQL(row[csv_longitude_column], row[csv_latitude_column])
+            data += buildPointSQL(row[longitudColumn], row[latitudColumn])
 
             sql = sqlInsert.format(dataset=datasetName, inputValues=inputValues, data=data)
-            try:
-                cur.execute(sql)
-                counter += 1
-            except:
-                print("Error insertando en la tabla.", sql)
+            cur.execute(sql)
+            counter += 1
 
         analyzeTable(datasetName)
         print("Registros creados: {}\n".format(counter))
