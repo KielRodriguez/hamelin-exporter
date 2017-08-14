@@ -1,9 +1,7 @@
-hamelin-exporter
+# hamelin-exporter
 ----------------
 
-Script para la generación de bases de datos geograficas apartir de un directorio con datos.
-
-Las bases son generadas en postgresql usando el plugin de POSTGIS o exportadas mediante el API de CARTO.
+Script de ayuda para la exportación de archivos con información geográfica a tablas de PostGIS.
 
 Archivos soportados:
 - csv
@@ -34,10 +32,8 @@ Puedes instalarlas con: ```$ pip install --user lxml pandas psycopg2```
 ##### Specs:
 - python 2.7
 
-
-
 ## Uso
-```python export.py directory```
+```python export.py file new_table_name```
 
 ## Licencia
 hamelin-exporter es software libre, y puede ser redistribuido bajo los términos especificados en nuestra [licencia](https://datos.gob.mx/libreusomx).
