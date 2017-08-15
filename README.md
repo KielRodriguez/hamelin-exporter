@@ -6,7 +6,7 @@ Script de ayuda para la exportación de archivos con información geográfica a 
 Archivos soportados:
 - csv
 - shp
-- kml
+- kml/kmz
 
 Librerias externas de python:
 - lxml

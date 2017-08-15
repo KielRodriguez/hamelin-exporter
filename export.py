@@ -12,6 +12,8 @@ from lxml import objectify
 import pandas as pd
 import psycopg2
 
+from zipfile import ZipFile
+
 
 if len(sys.argv) < 3:
     print("python export.py file table_name")
@@ -31,7 +33,7 @@ postgres_password = os.getenv("POSTGRES_PASSWORD") if os.getenv("POSTGRES_PASSWO
 
 
 csv_latitude_column = "(latitude|latitud|lat)"
-csv_longitude_column = "(longitude|longitud|lng|long)"
+csv_longitude_column = "(longitude|longitud|lon|lng|long)"
 csv_delimiter = ","
 
 geometry_column = "the_geom"
@@ -50,152 +52,26 @@ except:
     print ("Error en la conexión con postgres.")
     sys.exit()
 
+
 def analyzeTable(datasetName):
     conn.cursor().execute("ANALYZE " + datasetName)
 
 
-def processSHP(file, datasetName):
-    print("**SHP**")
-    print("Procesando... " + file)
+def createIndex(datasetName, geomColumn, indexNameSuffix=""):
+    sql = "CREATE INDEX " + datasetName + "_gix" + indexNameSuffix + " ON " + datasetName + " USING GIST (" + geomColumn + ");"
 
-    conn.cursor().execute("DROP TABLE IF EXISTS " + datasetName)
+    try:
+        conn.cursor().execute(sql)
+    except:
+        print("Error creando el índice espacial.", sql)
 
-    p1 = subprocess.Popen(["shp2pgsql", "-c", "-s", geometry_srid, "-g", geometry_column, file, "public."+datasetName], stdout=subprocess.PIPE)
-    p2 = subprocess.Popen(["psql", "-h", postgres_host, "-d", postgres_dbname, "-U", postgres_user], stdin=p1.stdout, stdout=subprocess.PIPE)
-
-    p1.stdout.close()
-    output,err=p2.communicate()
-
-    if(err):
-        print("Error", err)
-
-
-def processKML(file, datasetName):
-    print("**KML**")
-
-    sqlInsert = "INSERT INTO {dataset}(name, description, {geometry_column}{suffixColumn}) VALUES ('{name}','{description}',{geometry})"
-
-    print("Procesando... " + file)
-
-    with open(file) as f:
-        try:
-            kml = objectify.parse(f)
-            root = kml.getroot()
-
-            ## remove namespaces
-            for elem in root.getiterator():
-                if not hasattr(elem.tag, 'find'): continue  # (1)
-                i = elem.tag.find('}')
-                if i >= 0:
-                    elem.tag = elem.tag[i+1:]
-            objectify.deannotate(root, cleanup_namespaces=True)
-        except:
-            print("Error parseando el archivo. --omitiendo\n")
-            return
-
-        #flags
-        pointColumn = False
-        linestringColumn = False
-        polygonColumn = False
-
-        cur = conn.cursor()
-
-        sql = "DROP TABLE IF EXISTS " + datasetName + ";CREATE TABLE " + datasetName + "(id serial, name text, description text)"
-
-        try:
-            cur.execute(sql)
-        except:
-            print("Error creando la tabla " + datasetName, sql)
-            return
-
-        counter_points = 0
-        counter_linestring = 0
-        counter_polygon = 0
-
-        for pm in root.findall(".//Placemark"):
-            name=pm.name.text.encode("utf-8")
-
-            try:
-                description=pm.description.text.encode("utf-8").replace("\n","").strip()
-            except:
-                description=""
-
-            if hasattr(pm, 'Point'):
-                if not pointColumn:
-                    if createGeometryColumn(cur, datasetName, "POINT", "_point"):
-                        pointColumn = True
-                    else: continue
-
-                sql = sqlInsert.format(dataset=datasetName,geometry_column=geometry_column, suffixColumn="_point", name=name, description=description, geometry=createGeomFromKML(point=pm.Point.coordinates.text))
-                try:
-                    cur.execute(sql)
-                    counter_points += 1
-                except:
-                    print("Error inserting in the table, skipping: " + sql)
-                    continue
-
-
-            elif hasattr(pm, 'LineString'):
-                if not linestringColumn:
-                    if createGeometryColumn(cur, datasetName, "LINESTRING", "_linestring"):
-                        linestringColumn = True
-                    else: continue
-
-                sql = sqlInsert.format(dataset=datasetName,geometry_column=geometry_column, suffixColumn="_linestring", name=name, description=description, geometry=createGeomFromKML(linestring=pm.LineString.coordinates.text))
-                try:
-                    cur.execute(sql)
-                    counter_linestring += 1
-                except:
-                    print("Error inserting in the table, skipping: " + sql)
-                    continue
-
-            elif hasattr(pm, 'Polygon'):
-                if not polygonColumn:
-                    if createGeometryColumn(cur, datasetName, "POLYGON", "_polygon"):
-                        polygonColumn = True
-                    else: continue
-
-                sql = sqlInsert.format(dataset=datasetName,geometry_column=geometry_column, suffixColumn="_polygon", name=name, description=description, geometry=createGeomFromKML(polygon=pm.Polygon.outerBoundaryIs.LinearRing.coordinates.text))
-                try:
-                    cur.execute(sql)
-                    counter_polygon += 1
-                except:
-                    print("Error inserting in the table, skipping: " + sql)
-                    continue
-
-        analyzeTable(datasetName)
-        print("Registros creados\n\tPuntos: {}\n\tLinestring: {}\n\tPolygon: {}\n".format(counter_points, counter_linestring, counter_polygon))
 
 def buildPointSQL(lon, lat):
     return "ST_SetSRID(ST_MakePoint(" + str(lon) + "," + str(lat) + ")," + geometry_srid + ")"
 
 
-def createGeomFromKML(point=None, linestring=None, polygon=None):
-    if point is not None:
-        coords = point.split(",")
-        return buildPointSQL(coords[0].strip(), coords[1].strip())
-    elif linestring is not None:
-        query ="ST_GeomFromText('LINESTRING("
-        for line in linestring.split("\n"):
-            coords = line.split(",")
-            query += coords[0].strip() + " " + coords[1].strip() + ","
-
-        return query[0:-1] + ")', " + geometry_srid + ")"
-    elif polygon is not None:
-        query ="ST_GeomFromText('POLYGON(("
-        for line in polygon.split("\n"):
-            coords = line.split(",")
-            query += coords[0].strip() + " " + coords[1].strip() + ","
-
-        return query[0:-1] + "))', " + geometry_srid + ")"
-
-
-def buildDatasetNameFromURI(uri):
-    return uri.split("/")[-1].split(".")[0].replace("-","_").replace(" ","_").strip().lower()
-
-
 def createGeometryColumn(cur, datasetName, type, suffixColumn=""):
-    sql = "SELECT AddGeometryColumn('{dataset}' , '{geometry_column}{suffixColumn}', {srid},'{geometry}',2)"
+    sql = "SELECT AddGeometryColumn('{dataset}','{geometry_column}{suffixColumn}',{srid},'{geometry}',2)"
 
     try:
         cur.execute(sql.format(dataset=datasetName, geometry_column=geometry_column,suffixColumn=suffixColumn, srid=geometry_srid, geometry=type))
@@ -205,13 +81,152 @@ def createGeometryColumn(cur, datasetName, type, suffixColumn=""):
         return False
 
 
-def processCSV(file, datasetName):
-    print("**CSV**")
+def createGeomFromKML(coordinates, point=False, linestring=False, polygon=False):
+    coordinates = coordinates.strip().replace("\n","")
+
+    if point:
+        coords = coordinates.split(",")
+        return buildPointSQL(coords[0].strip(), coords[1].strip())
+    elif linestring:
+        query = "ST_GeomFromText('LINESTRING("
+        for coords_row in coordinates.split(" "):
+            coords = coords_row.split(",")
+            if(len(coords)>=2):
+                query += coords[0].strip() + " " + coords[1].strip() + ","
+
+        return query[0:-1] + ")', " + geometry_srid + ")"
+    elif polygon:
+        query ="ST_GeomFromText('POLYGON(("
+        for coords_row in coordinates.split(" "):
+            coords = coords_row.split(",")
+            if(len(coords)>=2):
+                query += coords[0].strip() + " " + coords[1].strip() + ","
+
+        return query[0:-1] + "))', " + geometry_srid + ")"
+
+
+
+def processKML(file, datasetName, raw_data=None):
+    sqlInsert = "INSERT INTO {dataset}(name, description, {geometry_column}{suffixColumn}) VALUES ('{name}','{description}',{geometry})"
+
+    print("Procesando... ")
+
+    if raw_data is None:
+        with open(file) as f:
+            raw_data = f.read()
+            f.close()
+
+    try:
+        root = objectify.fromstring(raw_data)
+
+        ## remove namespaces
+        for elem in root.getiterator():
+            if not hasattr(elem.tag, 'find'): continue  # (1)
+            i = elem.tag.find('}')
+            if i >= 0:
+                elem.tag = elem.tag[i+1:]
+        objectify.deannotate(root, cleanup_namespaces=True)
+    except:
+        print("Error parseando el archivo.\n")
+        return
+
+    #flags
+    pointColumn = False
+    linestringColumn = False
+    polygonColumn = False
+
+    cur = conn.cursor()
+
+    sql = "DROP TABLE IF EXISTS " + datasetName + ";CREATE TABLE " + datasetName + "(gid serial PRIMARY KEY, name text, description text)"
+
+    try:
+        cur.execute(sql)
+    except:
+        print("Error creando la tabla " + datasetName, sql)
+        return
+
+    counter_points = 0
+    counter_linestring = 0
+    counter_polygon = 0
+    for pm in root.findall(".//Placemark"):
+        try:
+            name=pm.name.text.encode("utf-8").strip().replace("'","''")
+        except:
+            name=""
+
+        try:
+            description=pm.description.text.encode("utf-8").replace("\n","").strip().replace("'","''")
+        except:
+            description=""
+
+        if hasattr(pm, 'Point'):
+            if not pointColumn:
+                if createGeometryColumn(cur, datasetName, "POINT", "_point"):
+                    pointColumn = True
+                else: continue
+
+            sql = sqlInsert.format(dataset=datasetName,geometry_column=geometry_column, suffixColumn="_point", name=name, description=description, geometry=createGeomFromKML(pm.Point.coordinates.text, point=True))
+            try:
+                cur.execute(sql)
+                counter_points += 1
+            except:
+                print("Error inserting in the table, skipping: " + sql)
+                continue
+
+
+        elif hasattr(pm, 'LineString'):
+            if not linestringColumn:
+                if createGeometryColumn(cur, datasetName, "LINESTRING", "_linestring"):
+                    linestringColumn = True
+                else: continue
+
+            sql = sqlInsert.format(dataset=datasetName,geometry_column=geometry_column, suffixColumn="_linestring", name=name, description=description, geometry=createGeomFromKML(pm.LineString.coordinates.text, linestring=True))
+            try:
+                cur.execute(sql)
+                counter_linestring += 1
+            except:
+                print("Error inserting in the table, skipping: " + sql)
+                continue
+
+        elif hasattr(pm, 'Polygon'):
+            if not polygonColumn:
+                if createGeometryColumn(cur, datasetName, "POLYGON", "_polygon"):
+                    polygonColumn = True
+                else: continue
+
+            sql = sqlInsert.format(dataset=datasetName,geometry_column=geometry_column, suffixColumn="_polygon", name=name, description=description, geometry=createGeomFromKML(pm.Polygon.outerBoundaryIs.LinearRing.coordinates.text, polygon=True))
+            try:
+                cur.execute(sql)
+                counter_polygon += 1
+            except:
+                print("Error inserting in the table, skipping: " + sql)
+                continue
+
+    analyzeTable(datasetName)
+    print("Registros creados\n\tPuntos: {}\n\tLinestring: {}\n\tPolygon: {}\n".format(counter_points, counter_linestring, counter_polygon))
+
+
+def processSHP(file, datasetName):
+    print("**SHP**")
     print("Procesando... " + file)
 
+    conn.cursor().execute("DROP TABLE IF EXISTS " + datasetName)
+
+    p1 = subprocess.Popen(["shp2pgsql", "-c", "-s", geometry_srid, "-g", geometry_column, "-I", file, "public."+datasetName], stdout=subprocess.PIPE)
+    p2 = subprocess.Popen(["psql", "-h", postgres_host, "-d", postgres_dbname, "-U", postgres_user], stdin=p1.stdout, stdout=subprocess.PIPE)
+
+    p1.stdout.close()
+    output,err=p2.communicate()
+
+    if(err):
+        print("Error", err)
+
+
+def processCSV(file, datasetName):
+    print("Procesando... " + file)
     sqlInsert = "INSERT INTO {dataset}{inputValues} VALUES ({data})"
 
-    dataset = pd.read_csv(file)
+    dataset = pd.read_csv(file, keep_default_na=False, low_memory=False)
     dataset.columns = map(str.lower, dataset.columns) # headers to lowercase
 
     latitudColumn = None
@@ -222,16 +237,13 @@ def processCSV(file, datasetName):
         elif re.match(csv_longitude_column, column) is not None:
             longitudColumn = column
 
-
-    # if csv_latitude_column in dataset.columns and csv_longitude_column in dataset.columns:
     if latitudColumn is not None and longitudColumn is not None:
-        print("Procesando... " + file)
-        print("Using " + latitudColumn + " / " + longitudColumn)
+        print("Usando " + latitudColumn + " / " + longitudColumn)
 
         cur = conn.cursor()
 
         sql = "DROP TABLE IF EXISTS " + datasetName + ";"
-        sql += "CREATE TABLE " + datasetName + "("
+        sql += "CREATE TABLE " + datasetName + "(gid serial PRIMARY KEY,"
         inputValues = "("
         for header in dataset.columns:
             sql += header + " text,"
@@ -259,18 +271,22 @@ def processCSV(file, datasetName):
 
             data = ""
             for header in dataset.columns:
-                data += "'" + str(row[header]).rstrip() + "',"
+                data += "'" + str(row[header]).strip().replace("'","''") + "',"
             data += buildPointSQL(row[longitudColumn], row[latitudColumn])
 
             sql = sqlInsert.format(dataset=datasetName, inputValues=inputValues, data=data)
+
             cur.execute(sql)
             counter += 1
 
+        createIndex(datasetName, geometry_column)
         analyzeTable(datasetName)
         print("Registros creados: {}\n".format(counter))
     else:
-        print("No se encontro información geografica.", filePath)
+        print("No se encontro información geografica.")
 
+
+print("\nTipo: " + fileType)
 
 if fileType=="csv":
     processCSV(filePath, newTableName)
@@ -278,5 +294,12 @@ elif fileType=="shp":
     processSHP(filePath, newTableName)
 elif fileType=="kml":
     processKML(filePath, newTableName)
+elif fileType=="kmz":
+    zip=ZipFile(filePath)
+    for z in zip.filelist:
+        if z.filename[-4:] == '.kml':
+            suffix = "_" + z.filename.split(".")[-2]
+            processKML("", newTableName+suffix, raw_data=zip.read(z))
+
 
 print("Done")
