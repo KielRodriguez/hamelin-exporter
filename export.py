@@ -6,11 +6,13 @@ import math
 import sys
 import subprocess
 import re
+import unidecode
 
 from lxml import etree
 from lxml import objectify
 import pandas as pd
 import psycopg2
+
 
 from zipfile import ZipFile
 
@@ -26,10 +28,11 @@ newTableName = sys.argv[2]
 fileType = filePath.split("/")[-1].split(".")[1].strip().lower()
 
 
-postgres_dbname = os.getenv("POSTGRES_DBNAME") if os.getenv("POSTGRES_DBNAME") is not None else "import"
-postgres_user = os.getenv("POSTGRES_USER") if os.getenv("POSTGRES_USER") is not None else "postgres"
-postgres_host = os.getenv("POSTGRES_HOST") if os.getenv("POSTGRES_HOST") is not None else "localhost"
-postgres_password = os.getenv("POSTGRES_PASSWORD") if os.getenv("POSTGRES_PASSWORD") is not None else ""
+POSTGRES_DBNAME = os.getenv("POSTGRES_DBNAME") if os.getenv("POSTGRES_DBNAME") is not None else "import"
+POSTGRES_USER = os.getenv("POSTGRES_USER") if os.getenv("POSTGRES_USER") is not None else "postgres"
+POSTGRES_HOST = os.getenv("POSTGRES_HOST") if os.getenv("POSTGRES_HOST") is not None else "localhost"
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD") if os.getenv("POSTGRES_PASSWORD") is not None else ""
+POSTGRES_PORT = os.getenv("POSTGRES_PORT") if os.getenv("POSTGRES_PORT") is not None else "5432"
 
 
 csv_latitude_column = "(latitude|latitud|lat)"
@@ -46,7 +49,7 @@ jsonList = []
 kmlKmzList = []
 
 try:
-    conn = psycopg2.connect("dbname='{dbname}' user='{user}' host='{host}' password='{password}'".format(dbname=postgres_dbname, user=postgres_user, host=postgres_host, password=postgres_password))
+    conn = psycopg2.connect(dbname=POSTGRES_DBNAME, user=POSTGRES_USER, host=POSTGRES_HOST, password=POSTGRES_PASSWORD, port=POSTGRES_PORT)
     conn.autocommit = True
 except:
     print ("Error en la conexión con postgres.")
@@ -107,9 +110,9 @@ def createGeomFromKML(coordinates, point=False, linestring=False, polygon=False)
 
 
 def processKML(file, datasetName, raw_data=None):
-    sqlInsert = "INSERT INTO {dataset}(name, description, {geometry_column}{suffixColumn}) VALUES ('{name}','{description}',{geometry})"
+    print("Procesando kml... " + file + " - " + datasetName)
 
-    print("Procesando... ")
+    sqlInsert = "INSERT INTO {dataset}(name, description, {geometry_column}{suffixColumn}) VALUES ('{name}','{description}',{geometry})"
 
     if raw_data is None:
         with open(file) as f:
@@ -207,27 +210,41 @@ def processKML(file, datasetName, raw_data=None):
 
 
 def processSHP(file, datasetName):
-    print("**SHP**")
-    print("Procesando... " + file)
+    print("Procesando shp..." + file + " - " + datasetName)
 
     conn.cursor().execute("DROP TABLE IF EXISTS " + datasetName)
 
     p1 = subprocess.Popen(["shp2pgsql", "-c", "-s", geometry_srid, "-g", geometry_column, "-I", file, "public."+datasetName], stdout=subprocess.PIPE)
-    p2 = subprocess.Popen(["psql", "-h", postgres_host, "-d", postgres_dbname, "-U", postgres_user], stdin=p1.stdout, stdout=subprocess.PIPE)
+    p2 = subprocess.Popen(["psql", "-h", POSTGRES_HOST, "-p", POSTGRES_PORT,"-d", POSTGRES_DBNAME, "-U", POSTGRES_USER], stdin=p1.stdout, stdout=subprocess.PIPE)
 
     p1.stdout.close()
     output,err=p2.communicate()
 
     if(err):
         print("Error", err)
+    else:
+        print("\n")
 
 
 def processCSV(file, datasetName):
-    print("Procesando... " + file)
+    print("Procesando csv..." + file + " - " + datasetName)
     sqlInsert = "INSERT INTO {dataset}{inputValues} VALUES ({data})"
 
-    dataset = pd.read_csv(file, keep_default_na=False, low_memory=False)
-    dataset.columns = map(str.lower, dataset.columns) # headers to lowercase
+    try:
+        dataset = pd.read_csv(file, keep_default_na=False, low_memory=False, encoding = "UTF-8", dtype="str")
+    except:
+        print("Error parseando el archivo\n")
+        return
+
+    rep = {" ": "_", ",": "_", "!":"", "(":"", ")":""}
+    rep = dict((re.escape(k), v) for k, v in rep.iteritems())
+    pattern = re.compile("|".join(rep.keys()))
+
+    columns = []
+    for column in dataset.columns:
+        columns.append(pattern.sub(lambda m: rep[re.escape(m.group(0))], column.strip()).lower())
+
+    dataset.columns = columns
 
     latitudColumn = None
     longitudColumn = None
@@ -265,17 +282,17 @@ def processCSV(file, datasetName):
         print("Cargando tabla...")
         counter = 0
         for index, row in dataset.iterrows():
-            if math.isnan(row[longitudColumn]) or math.isnan(row[latitudColumn]):
+            if math.isnan(float(row[longitudColumn])) or math.isnan(float(row[latitudColumn])):
                 print("Error en la linea " + str(index+2) + ". --omitiendo")
                 continue
 
-            data = ""
+            data = "nextval('"  + datasetName + "_gid_seq'),"
             for header in dataset.columns:
-                data += "'" + str(row[header]).strip().replace("'","''") + "',"
+                data += "'" + row[header].strip().replace("'","''") + "',"
             data += buildPointSQL(row[longitudColumn], row[latitudColumn])
 
-            sql = sqlInsert.format(dataset=datasetName, inputValues=inputValues, data=data)
-
+            # sql = sqlInsert.format(dataset=datasetName, inputValues="", data=data)
+            sql = "INSERT INTO " + datasetName + " VALUES (" + data + ")"
             cur.execute(sql)
             counter += 1
 
@@ -283,10 +300,7 @@ def processCSV(file, datasetName):
         analyzeTable(datasetName)
         print("Registros creados: {}\n".format(counter))
     else:
-        print("No se encontro información geografica.")
-
-
-print("\nTipo: " + fileType)
+        print("No se encontro información geografica.\n")
 
 if fileType=="csv":
     processCSV(filePath, newTableName)
@@ -295,11 +309,9 @@ elif fileType=="shp":
 elif fileType=="kml":
     processKML(filePath, newTableName)
 elif fileType=="kmz":
+    print("Procesando kmz...")
     zip=ZipFile(filePath)
     for z in zip.filelist:
         if z.filename[-4:] == '.kml':
             suffix = "_" + z.filename.split(".")[-2]
-            processKML("", newTableName+suffix, raw_data=zip.read(z))
-
-
-print("Done")
+            processKML(filePath, newTableName+suffix, raw_data=zip.read(z))
