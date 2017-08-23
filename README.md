@@ -13,7 +13,7 @@ Librerias externas de python:
 - pandas
 - psycopg2
 
-Puedes instalarlas con: ```$ pip install --user lxml pandas psycopg2```
+Puedes instalarlas con: ```$ pip install --user lxml pandas psycopg2 unidecode```
 
 ## Requisitos
 
@@ -22,6 +22,7 @@ Puedes instalarlas con: ```$ pip install --user lxml pandas psycopg2```
 - POSTGRES_USER=postgres
 - POSTGRES_HOST=localhost
 - POSTGRES_PASSWORD=password
+- POSTGRES_PORT=port
 
 ##### PostGIS
 ¿Cómo instalar PostGIS?
