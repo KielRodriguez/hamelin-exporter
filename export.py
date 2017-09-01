@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 #coding=utf-8
 
 import os
@@ -6,19 +6,17 @@ import math
 import sys
 import subprocess
 import re
-import unidecode
 
 from lxml import etree
 from lxml import objectify
 import pandas as pd
 import psycopg2
 
-
 from zipfile import ZipFile
 
 
 if len(sys.argv) < 3:
-    print("python export.py file table_name")
+    print("Correct usage: python export.py file table_name")
     sys.exit()
 
 
@@ -52,7 +50,7 @@ try:
     conn = psycopg2.connect(dbname=POSTGRES_DBNAME, user=POSTGRES_USER, host=POSTGRES_HOST, password=POSTGRES_PASSWORD, port=POSTGRES_PORT)
     conn.autocommit = True
 except:
-    print ("Error en la conexión con postgres.")
+    print("Error en la conexión con postgres.")
     sys.exit()
 
 
@@ -115,7 +113,7 @@ def processKML(file, datasetName, raw_data=None):
     sqlInsert = "INSERT INTO {dataset}(name, description, {geometry_column}{suffixColumn}) VALUES ('{name}','{description}',{geometry})"
 
     if raw_data is None:
-        with open(file) as f:
+        with open(file, "rb") as f:
             raw_data = f.read()
             f.close()
 
@@ -153,12 +151,13 @@ def processKML(file, datasetName, raw_data=None):
     counter_polygon = 0
     for pm in root.findall(".//Placemark"):
         try:
-            name=pm.name.text.encode("utf-8").strip().replace("'","''")
+            name=pm.name.text.strip().replace("'","''")
         except:
-            name=""
+            print("No name found, skipping row - ")# + etree.tostring(pm))
+            continue
 
         try:
-            description=pm.description.text.encode("utf-8").replace("\n","").strip().replace("'","''")
+            description=pm.description.text.replace("\n","").strip().replace("'","''")
         except:
             description=""
 
@@ -231,28 +230,48 @@ def processCSV(file, datasetName):
     sqlInsert = "INSERT INTO {dataset}{inputValues} VALUES ({data})"
 
     try:
-        dataset = pd.read_csv(file, keep_default_na=False, low_memory=False, encoding = "UTF-8", dtype="str")
+        dataset = pd.read_csv(file, keep_default_na=False, low_memory=False, encoding="utf-8")
     except:
-        print("Error parseando el archivo\n")
-        return
+        try:
+            dataset = pd.read_csv(file, keep_default_na=False, low_memory=False, encoding="latin-1")
+        except:
+            print("Error parseando el archivo\n")
+            return
 
-    rep = {" ": "_", ",": "_", "!":"", "(":"", ")":""}
-    rep = dict((re.escape(k), v) for k, v in rep.iteritems())
+    rep = {" ": "_", ",": "_", "!":"", "(":"", ")":"", "ñ":"n"}
+    rep = dict((re.escape(k), v) for k, v in rep.items()) # rep.iteritems() -> python 2.7
     pattern = re.compile("|".join(rep.keys()))
 
-    columns = []
-    for column in dataset.columns:
-        columns.append(pattern.sub(lambda m: rep[re.escape(m.group(0))], column.strip()).lower())
-
-    dataset.columns = columns
+    # numeric columns that should be treated as str (catalogs)
+    for column in ["id", "cve_ent", "cve_mun", "cve_loc"]:
+        if column in dataset.columns:
+            dataset[column] = dataset[column].astype(str)
 
     latitudColumn = None
     longitudColumn = None
+
+    columns = []
+    columnsType = {}
     for column in dataset.columns:
-        if re.match(csv_latitude_column, column) is not None:
-            latitudColumn = column
-        elif re.match(csv_longitude_column, column) is not None:
-            longitudColumn = column
+        newColumnName = pattern.sub(lambda m: rep[re.escape(m.group(0))], column.strip()).lower()
+
+        # geographic columns
+        if re.match(csv_latitude_column, newColumnName) is not None:
+            latitudColumn = newColumnName
+        elif re.match(csv_longitude_column, newColumnName) is not None:
+            longitudColumn = newColumnName
+
+        # data types
+        if dataset[column].dtype == "int64":
+            columnsType[newColumnName] = "integer"
+        elif dataset[column].dtype == "float64":
+            columnsType[newColumnName] = "real"
+        else:
+            columnsType[newColumnName] = "text"
+
+        columns.append(newColumnName)
+
+    dataset.columns = columns
 
     if latitudColumn is not None and longitudColumn is not None:
         print("Usando " + latitudColumn + " / " + longitudColumn)
@@ -263,7 +282,7 @@ def processCSV(file, datasetName):
         sql += "CREATE TABLE " + datasetName + "(gid serial PRIMARY KEY,"
         inputValues = "("
         for header in dataset.columns:
-            sql += header + " text,"
+            sql += header + " {},".format(columnsType[header])
             inputValues += header + ","
 
         inputValues = inputValues + geometry_column + ")"
@@ -279,6 +298,7 @@ def processCSV(file, datasetName):
         if not createGeometryColumn(cur, datasetName, "POINT"):
             return
 
+
         print("Cargando tabla...")
         counter = 0
         for index, row in dataset.iterrows():
@@ -288,11 +308,15 @@ def processCSV(file, datasetName):
 
             data = "nextval('"  + datasetName + "_gid_seq'),"
             for header in dataset.columns:
-                data += "'" + row[header].strip().replace("'","''") + "',"
+                if columnsType[header] == "text":
+                    data += "'" + row[header].strip().replace("'","''") + "',"
+                else:
+                    data += str(row[header]) + ","
+
             data += buildPointSQL(row[longitudColumn], row[latitudColumn])
 
-            # sql = sqlInsert.format(dataset=datasetName, inputValues="", data=data)
-            sql = "INSERT INTO " + datasetName + " VALUES (" + data + ")"
+            sql = sqlInsert.format(dataset=datasetName, inputValues="", data=data)
+            # sql = "INSERT INTO " + datasetName + " VALUES (" + data + ")"
             cur.execute(sql)
             counter += 1
 

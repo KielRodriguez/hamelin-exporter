@@ -13,7 +13,7 @@ Librerias externas de python:
 - pandas
 - psycopg2
 
-Puedes instalarlas con: ```$ pip install --user lxml pandas psycopg2 unidecode```
+Puedes instalarlas con: ```$ pip3 install --user lxml pandas psycopg2```
 
 ## Requisitos
 
@@ -31,10 +31,10 @@ Puedes instalarlas con: ```$ pip install --user lxml pandas psycopg2 unidecode``
 - Arch Linux: ```$ sudo pacman -S postgresql postgis```
 
 ##### Specs:
-- python 2.7
+- python 3: Se usa el motor de python 3 para poder resolver problemas logicos con el encoding de los datos
 
 ## Uso
-```python export.py file new_table_name```
+```python3 export.py file new_table_name```
 
 ## Licencia
 hamelin-exporter es software libre, y puede ser redistribuido bajo los términos especificados en nuestra [licencia](https://datos.gob.mx/libreusomx).
