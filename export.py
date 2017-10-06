@@ -16,7 +16,7 @@ from zipfile import ZipFile
 
 
 if len(sys.argv) < 3:
-    print("Correct usage: python export.py file table_name")
+    print("Correct usage: python3 export.py file table_name")
     sys.exit()
 
 
@@ -52,7 +52,6 @@ try:
 except:
     print("Error en la conexión con postgres.")
     sys.exit()
-
 
 def analyzeTable(datasetName):
     conn.cursor().execute("ANALYZE " + datasetName)
@@ -227,10 +226,10 @@ def processCSV(file, datasetName):
     sqlInsert = "INSERT INTO {dataset}{inputValues} VALUES ({data})"
 
     try:
-        dataset = pd.read_csv(file, keep_default_na=False, low_memory=False, encoding="utf-8")
+        dataset = pd.read_csv(file, keep_default_na=False, low_memory=False, encoding="utf-8", sep=csv_delimiter, error_bad_lines=False, warn_bad_lines=False)
     except:
         try:
-            dataset = pd.read_csv(file, keep_default_na=False, low_memory=False, encoding="latin-1")
+            dataset = pd.read_csv(file, keep_default_na=False, low_memory=False, encoding="latin-1", sep=csv_delimiter, error_bad_lines=False, warn_bad_lines=False)
         except:
             print("Error parseando el archivo\n")
             return
@@ -289,7 +288,7 @@ def processCSV(file, datasetName):
             cur.execute(sql)
             print("Nueva tabla creada " + datasetName)
         except:
-            print("Error creando la tabla " + datasetName, sql)
+            print("Error creando la tabla " + datasetName, sql + "\n")
             return
 
         if not createGeometryColumn(cur, datasetName, "POINT"):
@@ -313,7 +312,6 @@ def processCSV(file, datasetName):
             data += buildPointSQL(row[longitudColumn], row[latitudColumn])
 
             sql = sqlInsert.format(dataset=datasetName, inputValues="", data=data)
-            # sql = "INSERT INTO " + datasetName + " VALUES (" + data + ")"
             cur.execute(sql)
             counter += 1
 
