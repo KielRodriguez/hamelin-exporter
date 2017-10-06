@@ -22,14 +22,20 @@ if len(sys.argv) < 3:
 
 filePath = sys.argv[1]
 newTableName = sys.argv[2]
-
 fileType = filePath.split("/")[-1].split(".")[1].strip().lower()
+
+print("Procesando " + fileType + "... " + filePath + " - " + newTableName)
+
+# check if file is empty
+if os.stat(filePath).st_size < 5: #size in bytes
+    print("Error -- Archivo vacio\n")
+    sys.exit()
 
 
 POSTGRES_DBNAME = os.getenv("POSTGRES_DBNAME") if os.getenv("POSTGRES_DBNAME") is not None else "import"
 POSTGRES_USER = os.getenv("POSTGRES_USER") if os.getenv("POSTGRES_USER") is not None else "postgres"
 POSTGRES_HOST = os.getenv("POSTGRES_HOST") if os.getenv("POSTGRES_HOST") is not None else "localhost"
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD") if os.getenv("POSTGRES_PASSWORD") is not None else ""
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD") if os.getenv("POSTGRES_PASSWORD") is not None else "postgres"
 POSTGRES_PORT = os.getenv("POSTGRES_PORT") if os.getenv("POSTGRES_PORT") is not None else "5432"
 
 
@@ -39,12 +45,6 @@ csv_delimiter = ","
 
 geometry_column = "the_geom"
 geometry_srid = "4326"
-
-csvFileList = []
-shpFileList = []
-geojsonFileList = []
-jsonList = []
-kmlKmzList = []
 
 try:
     conn = psycopg2.connect(dbname=POSTGRES_DBNAME, user=POSTGRES_USER, host=POSTGRES_HOST, password=POSTGRES_PASSWORD, port=POSTGRES_PORT)
@@ -108,8 +108,6 @@ def createGeomFromKML(coordinates, point=False, linestring=False, polygon=False)
 
 
 def processKML(file, datasetName, raw_data=None):
-    print("Procesando kml... " + file + " - " + datasetName)
-
     sqlInsert = "INSERT INTO {dataset}(name, description, {geometry_column}{suffixColumn}) VALUES ('{name}','{description}',{geometry})"
 
     if raw_data is None:
@@ -226,7 +224,6 @@ def processSHP(file, datasetName):
 
 
 def processCSV(file, datasetName):
-    print("Procesando csv..." + file + " - " + datasetName)
     sqlInsert = "INSERT INTO {dataset}{inputValues} VALUES ({data})"
 
     try:
@@ -238,7 +235,7 @@ def processCSV(file, datasetName):
             print("Error parseando el archivo\n")
             return
 
-    rep = {" ": "_", ",": "_", "!":"", "(":"", ")":"", "ñ":"n"}
+    rep = {" ": "_", ",": "_", "!":"", "(":"", ")":"", "ñ":"n", ".":"_"}
     rep = dict((re.escape(k), v) for k, v in rep.items()) # rep.iteritems() -> python 2.7
     pattern = re.compile("|".join(rep.keys()))
 
@@ -333,9 +330,13 @@ elif fileType=="shp":
 elif fileType=="kml":
     processKML(filePath, newTableName)
 elif fileType=="kmz":
-    print("Procesando kmz...")
-    zip=ZipFile(filePath)
-    for z in zip.filelist:
-        if z.filename[-4:] == '.kml':
-            suffix = "_" + z.filename.split(".")[-2]
-            processKML(filePath, newTableName+suffix, raw_data=zip.read(z))
+    print("Procesando kmz..." + filePath + " - " + newTableName)
+
+    try:
+        zip=ZipFile(filePath)
+        for z in zip.filelist:
+            if z.filename[-4:] == '.kml':
+                suffix = "_" + z.filename.split(".")[-2]
+                processKML(filePath, newTableName+suffix, raw_data=zip.read(z))
+    except error:
+        print(error)
