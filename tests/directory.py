@@ -11,7 +11,7 @@ if len(sys.argv) < 2:
     sys.exit()
 
 def getTableName(filename):
-    return filename.split(".")[0].lower().replace(" ","_").strip()
+    return "a" + filename.split(".")[0].lower().replace(" ","_").replace("-","_").strip()
 
 rootDirectory = sys.argv[1]
 
