@@ -70,74 +70,8 @@ def main():
         processKML(filePath, newTableName)
     elif fileType=="kmz":
         processKMZ(filePath, newTableName)
-
-
-def processKMZ(file, datasetName):
-    try:
-        zip=ZipFile(filePath)
-        for z in zip.filelist:
-            if z.filename[-4:] == '.kml':
-                suffix = "_" + z.filename.split(".")[-2]
-                processKML(None, newTableName+suffix, data=zip.read(z))
-    except error:
-        print(error)
-
-
-
-def analyzeTable(datasetName):
-    conn.cursor().execute("ANALYZE " + datasetName)
-
-
-def createIndex(datasetName, geomColumn, indexNameSuffix=""):
-    sql = "CREATE INDEX " + datasetName + "_gix" + indexNameSuffix + " ON " + datasetName + " USING GIST (" + geomColumn + ");"
-
-    try:
-        conn.cursor().execute(sql)
-    except:
-        print("Error creando el índice espacial.", sql)
-
-
-def buildPointSQL(lon, lat):
-    return "ST_SetSRID(ST_MakePoint(" + str(lon) + "," + str(lat) + ")," + geometry_srid + ")"
-
-
-def createGeometryColumn(cur, datasetName, type, suffixColumn=""):
-    sql = "SELECT AddGeometryColumn('{dataset}','{geometry_column}',{srid},'{geometry}',2)"
-
-    name = "{geometry_column}{suffixColumn}".format(geometry_column=geometry_column,suffixColumn=suffixColumn);
-
-    try:
-        geometryColumns.append(name)
-        cur.execute(sql.format(dataset=datasetName, geometry_column=name, srid=geometry_srid, geometry=type))
-        return name
-    except:
-        print("Error creando la geometria, esta postgis disponible en {} ? ".format(postgres_dbname), "Try: create extension postgis;")
-        return None
-
-
-def processKML(file, datasetName, data=None):
-    if data is None:
-        with open(file) as f:
-            processKML(file, datasetName, data=f.read())
-    else:
-        print("parsing to geojson")
-        geojson = kml2geojson.main.build_feature_collection(md.parseString(data))
-        processGeojson(None, datasetName, data=geojson)
-
-
-def processSHP(file, datasetName):
-    conn.cursor().execute("DROP TABLE IF EXISTS " + datasetName)
-
-    p1 = subprocess.Popen(["shp2pgsql", "-c", "-s", geometry_srid, "-g", geometry_column, "-I", file, "public."+datasetName], stdout=subprocess.PIPE)
-    p2 = subprocess.Popen(["psql", "-h", POSTGRES_HOST, "-p", POSTGRES_PORT,"-d", POSTGRES_DBNAME, "-U", POSTGRES_USER], stdin=p1.stdout, stdout=subprocess.PIPE)
-
-    p1.stdout.close()
-    output,err=p2.communicate()
-
-    if(err):
-        print("Error", err)
-    else:
-        print("\n")
+    elif fileType=="geojson":
+        processGeojson(filePath, newTableName)
 
 
 def processCSV(file, datasetName):
@@ -192,24 +126,12 @@ def processCSV(file, datasetName):
 
         cur = conn.cursor()
 
-        sql = "DROP TABLE IF EXISTS " + datasetName + ";"
-        sql += "CREATE TABLE " + datasetName + "(gid serial PRIMARY KEY,"
-        inputValues = "("
-        for header in dataset.columns:
-            sql += header + " {},".format(columnsType[header])
-            inputValues += header + ","
-
-        inputValues = inputValues + geometry_column + ")"
-        sql = sql[0:-1] + ");"
-
+        # create table
         try:
-            cur.execute(sql)
-            print("Nueva tabla creada " + datasetName)
-        except:
-            print("Error creando la tabla " + datasetName, sql + "\n")
-            return
-
-        if createGeometryColumn(cur, datasetName, "POINT") is not None:
+            createTable(datasetName, columns, columnsType)
+            createGeometryColumn(cur, datasetName, "POINT")
+        except psycopg2.Error as err:
+            print("Error creando la tabla --- ", err)
             return
 
 
@@ -240,88 +162,76 @@ def processCSV(file, datasetName):
         print("No se encontro información geografica.\n")
 
 
-def getObjType(obj):
-    try:
-        int(obj)
-        return "integer"
-    except:
-        try:
-            float(obj)
-            return "real"
-        except:
-            return "text"
-
-
-def createTableSQL(datasetName, columns, columnsType):
-    sql = "DROP TABLE IF EXISTS " + datasetName + ";CREATE TABLE " + datasetName + "(gid serial PRIMARY KEY"
-    for header in columns:
-        sql += "," + header.lower() + " {}".format(columnsType[header])
-    sql += ");"
-
-    print("creating table {}\n".format(sql))
-    conn.cursor().execute(sql)
-
-
-def isValidGeojson(geojson):
-    coordinates = geojson["geometry"]["coordinates"]
-    if coordinates[0] == 0 or coordinates[1] == 0:
-        return False
-    return True
-
-
 def processGeojson(file, datasetName, data=None):
-    sqlInsert = "INSERT INTO {dataset}({columns}) VALUES ({values})"
+    sqlInsert = "INSERT INTO {dataset}({columns}{geometry_column}{suffix}) VALUES ({values})"
 
     if data is None:
         with open(file) as geojsonFile:
             processGeojson(file, datasetName, data=json.load(geojsonFile))
     else:
-
-        # build table columns
+        # table columns
         columns = []
         geometryColumns = []
         columnsType = {}
+        columnString = ""
         skip = ["styleUrl"]
         for key in data["features"][0]["properties"]:
             if(key not in skip):
                 columns.append(key)
                 columnsType[key] = getObjType(data["features"][0]["properties"][key])
+                columnString += getValidColumnName(key) + ","
 
         # create table
         try:
-            createTableSQL(datasetName, columns, columnsType)
-        except psycopg2.Error as e:
-            print("Error creando la tabla --- ", e)
+            createTable(datasetName, columns, columnsType)
+        except psycopg2.Error as err:
+            print("Error creando la tabla --- ", err)
             return
 
         cur = conn.cursor()
 
-        columnsCreatedFlags = {}
+        columnsCreated = {}
         counter = 0
-        for feature in data["features"]:
-            if isValidGeojson(feature):
+        for element in data["features"]:
+            geometryType = element["geometry"]["type"]
+            properties = element["properties"]
+
+            featuresToProcess = []
+            if geometryType == "GeometryCollection":
+                for geometry in element["geometry"]["geometries"]:
+                    featuresToProcess.append({
+                        "geometry": geometry
+                    })
+            else:
+                featuresToProcess.append(element)
+
+
+            for feature in featuresToProcess:
                 geometryType = feature["geometry"]["type"]
-                columnString = ','.join(columns).lower()
 
-                if not hasattr(columnsCreatedFlags, geometryType):
+                if not geometryType in columnsCreated:
                     # create geometry column for geometry type
-                    columnsCreatedFlags[geometryType] = True
-                    geometryColumns.append(createGeometryColumn(cur, datasetName, geometryType.upper(), "_{type}".format(geometryType.lower())))
+                    try:
+                        columnName = createGeometryColumn(cur, datasetName, geometryType.upper(), "_{}".format(geometryType.lower()))
+                        geometryColumns.append(columnName)
 
-                columnString += ",{geometry_column}_{suffix}".format(geometry_column=geometry_column, suffix=geometryType.lower())
+                        columnsCreated[geometryType] = True
+
+                    except psycopg2.Error as err:
+                        print("Error creando columna geografica -- ", err)
+                        return
+
 
                 values = []
                 for column in columns:
                     if columnsType[column] == "text":
-                        values.append("'" + feature["properties"][column] + "'")
+                        values.append("'" + properties[column] + "'")
                     else:
-                        values.append(feature["properties"][column])
+                        values.append(str(properties[column]))
 
-                coordinates = [feature["geometry"]["coordinates"][0], feature["geometry"]["coordinates"][1]]
-                feature["geometry"]["coordinates"] = coordinates
                 values.append("ST_SetSRID(ST_GeomFromGeoJSON('" + json.dumps(feature["geometry"]) + "'),4326)")
 
-                sql = sqlInsert.format(dataset=datasetName, columns=columnString, values=",".join(values))
+                sql = sqlInsert.format(dataset=datasetName, columns=columnString, values=",".join(values), geometry_column=geometry_column, suffix="_"+geometryType.lower())
                 try:
                     counter += 1
                     cur.execute(sql)
@@ -344,7 +254,94 @@ def processGeojson(file, datasetName, data=None):
         analyzeTable(datasetName)
         print("Registros creados: {}\n".format(counter))
 
-def clean():
-    shutil.rmtree(tempDirectory)
+
+
+def processKMZ(file, datasetName):
+    try:
+        zip=ZipFile(filePath)
+        for z in zip.filelist:
+            if z.filename[-4:] == '.kml':
+                suffix = "_" + z.filename.split(".")[-2]
+                processKML(None, newTableName+suffix, data=zip.read(z))
+    except error:
+        print(error)
+
+
+
+def analyzeTable(datasetName):
+    conn.cursor().execute("ANALYZE " + datasetName)
+
+
+def createIndex(datasetName, geomColumn, indexNameSuffix=""):
+    sql = "CREATE INDEX " + datasetName + "_gix" + indexNameSuffix + " ON " + datasetName + " USING GIST (" + geomColumn + ");"
+
+    try:
+        conn.cursor().execute(sql)
+    except:
+        print("Error creando el índice espacial.", sql)
+
+
+def buildPointSQL(lon, lat):
+    return "ST_SetSRID(ST_MakePoint(" + str(lon) + "," + str(lat) + ")," + geometry_srid + ")"
+
+
+def createGeometryColumn(cur, datasetName, type, suffixColumn=""):
+    sql = "SELECT AddGeometryColumn('{dataset}','{geometry_column}',{srid},'{geometry}',2)"
+    name = "{geometry_column}{suffixColumn}".format(geometry_column=geometry_column,suffixColumn=suffixColumn);
+
+    cur.execute(sql.format(dataset=datasetName, geometry_column=name, srid=geometry_srid, geometry=type))
+    return name
+
+
+def processKML(file, datasetName, data=None):
+    if data is None:
+        with open(file) as f:
+            processKML(file, datasetName, data=f.read())
+    else:
+        kml2geojson.main.GEOTYPES = ['Polygon', 'LineString', 'Point']
+
+        print("parsing to geojson")
+        geojson = kml2geojson.main.build_feature_collection(md.parseString(data))
+        processGeojson(None, datasetName, data=geojson)
+
+
+def processSHP(file, datasetName):
+    conn.cursor().execute("DROP TABLE IF EXISTS " + datasetName)
+
+    p1 = subprocess.Popen(["shp2pgsql", "-c", "-s", geometry_srid, "-g", geometry_column, "-I", file, "public."+datasetName], stdout=subprocess.PIPE)
+    p2 = subprocess.Popen(["psql", "-h", POSTGRES_HOST, "-p", POSTGRES_PORT,"-d", POSTGRES_DBNAME, "-U", POSTGRES_USER], stdin=p1.stdout, stdout=subprocess.PIPE)
+
+    p1.stdout.close()
+    output,err=p2.communicate()
+
+    if(err):
+        print("Error", err)
+    else:
+        print("\n")
+
+
+def getObjType(obj):
+    try:
+        int(obj)
+        return "integer"
+    except:
+        try:
+            float(obj)
+            return "real"
+        except:
+            return "text"
+
+
+def getValidColumnName(column):
+    return column.lower().replace("-","_").replace(" ","_")
+
+def createTable(datasetName, columns, columnsType):
+    sql = "DROP TABLE IF EXISTS " + datasetName + ";CREATE TABLE " + datasetName + "(gid serial PRIMARY KEY"
+    for header in columns:
+        sql += "," + getValidColumnName(header) + " {}".format(columnsType[header])
+    sql += ");"
+
+    print("creating table {}".format(sql))
+    conn.cursor().execute(sql)
 
 main()
