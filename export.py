@@ -9,6 +9,8 @@ import re
 
 from lxml import etree
 from lxml import objectify
+import xml.dom.minidom as md
+
 import pandas as pd
 import psycopg2
 
@@ -67,16 +69,19 @@ def main():
     elif fileType=="kml":
         processKML(filePath, newTableName)
     elif fileType=="kmz":
-        print("Procesando kmz..." + filePath + " - " + newTableName)
+        processKMZ(filePath, newTableName)
 
-        try:
-            zip=ZipFile(filePath)
-            for z in zip.filelist:
-                if z.filename[-4:] == '.kml':
-                    suffix = "_" + z.filename.split(".")[-2]
-                    processKML(filePath, newTableName+suffix, raw_data=zip.read(z))
-        except error:
-            print(error)
+
+def processKMZ(file, datasetName):
+    try:
+        zip=ZipFile(filePath)
+        for z in zip.filelist:
+            if z.filename[-4:] == '.kml':
+                suffix = "_" + z.filename.split(".")[-2]
+                processKML(None, newTableName+suffix, data=zip.read(z))
+    except error:
+        print(error)
+
 
 
 def analyzeTable(datasetName):
@@ -110,22 +115,17 @@ def createGeometryColumn(cur, datasetName, type, suffixColumn=""):
         return None
 
 
-def processKML(file, datasetName, raw_data=None):
-    sqlInsert = "INSERT INTO {dataset}(name, description, {geometry_column}{suffixColumn}) VALUES ('{name}','{description}',{geometry})"
-
-    filename = tempDirectory + "/" + file.split("/")[-1].split(".")[0] + ".geojson"
-
-    print("creating geojson ->", filename)
-
-    kml2geojson.main.convert(file, tempDirectory) #parse
-    processGeojson(filename, datasetName)
-
-    clean()
+def processKML(file, datasetName, data=None):
+    if data is None:
+        with open(file) as f:
+            processKML(file, datasetName, data=f.read())
+    else:
+        print("parsing to geojson")
+        geojson = kml2geojson.main.build_feature_collection(md.parseString(data))
+        processGeojson(None, datasetName, data=geojson)
 
 
 def processSHP(file, datasetName):
-    print("Procesando shp..." + file + " - " + datasetName)
-
     conn.cursor().execute("DROP TABLE IF EXISTS " + datasetName)
 
     p1 = subprocess.Popen(["shp2pgsql", "-c", "-s", geometry_srid, "-g", geometry_column, "-I", file, "public."+datasetName], stdout=subprocess.PIPE)
@@ -202,14 +202,6 @@ def processCSV(file, datasetName):
         inputValues = inputValues + geometry_column + ")"
         sql = sql[0:-1] + ");"
 
-
-        # create table
-        # try:
-        #     createTableSQL(datasetName, columns, columnsType)
-        # except psycopg2.Error as e:
-        #     print("Error creando la tabla --- ", e)
-        #     return
-
         try:
             cur.execute(sql)
             print("Nueva tabla creada " + datasetName)
@@ -277,11 +269,13 @@ def isValidGeojson(geojson):
     return True
 
 
-def processGeojson(file, datasetName):
+def processGeojson(file, datasetName, data=None):
     sqlInsert = "INSERT INTO {dataset}({columns}) VALUES ({values})"
 
-    with open(file) as data_file:
-        data = json.load(data_file)
+    if data is None:
+        with open(file) as geojsonFile:
+            processGeojson(file, datasetName, data=json.load(geojsonFile))
+    else:
 
         # build table columns
         columns = []
