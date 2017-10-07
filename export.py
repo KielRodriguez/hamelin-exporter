@@ -17,9 +17,10 @@ import json
 
 from zipfile import ZipFile
 
+import shutil
 
 if len(sys.argv) < 3:
-    print("Correct usage: python3 export.py file table_name")
+    print("Uso: python3 export.py file table_name")
     sys.exit()
 
 
@@ -29,7 +30,7 @@ fileType = filePath.split("/")[-1].split(".")[1].strip().lower()
 
 print("Procesando " + fileType + "... " + filePath + " - " + newTableName)
 
-# check if file is empty
+# check if the file is empty
 if os.stat(filePath).st_size < 5: #size in bytes
     print("Error -- Archivo vacio\n")
     sys.exit()
@@ -49,14 +50,33 @@ csv_delimiter = ","
 geometry_column = "the_geom"
 geometry_srid = "4326"
 
-generated_geojson_directory = "generated_geojson"
+tempDirectory = "temp"
 
 try:
     conn = psycopg2.connect(dbname=POSTGRES_DBNAME, user=POSTGRES_USER, host=POSTGRES_HOST, password=POSTGRES_PASSWORD, port=POSTGRES_PORT)
     conn.autocommit = True
 except:
-    print("Error en la conexión con postgres.")
+    print("Error en la conexión con postgis.")
     sys.exit()
+
+def main():
+    if fileType=="csv":
+        processCSV(filePath, newTableName)
+    elif fileType=="shp":
+        processSHP(filePath, newTableName)
+    elif fileType=="kml":
+        processKML(filePath, newTableName)
+    elif fileType=="kmz":
+        print("Procesando kmz..." + filePath + " - " + newTableName)
+
+        try:
+            zip=ZipFile(filePath)
+            for z in zip.filelist:
+                if z.filename[-4:] == '.kml':
+                    suffix = "_" + z.filename.split(".")[-2]
+                    processKML(filePath, newTableName+suffix, raw_data=zip.read(z))
+        except error:
+            print(error)
 
 
 def analyzeTable(datasetName):
@@ -77,149 +97,30 @@ def buildPointSQL(lon, lat):
 
 
 def createGeometryColumn(cur, datasetName, type, suffixColumn=""):
-    sql = "SELECT AddGeometryColumn('{dataset}','{geometry_column}{suffixColumn}',{srid},'{geometry}',2)"
+    sql = "SELECT AddGeometryColumn('{dataset}','{geometry_column}',{srid},'{geometry}',2)"
+
+    name = "{geometry_column}{suffixColumn}".format(geometry_column=geometry_column,suffixColumn=suffixColumn);
 
     try:
-        cur.execute(sql.format(dataset=datasetName, geometry_column=geometry_column,suffixColumn=suffixColumn, srid=geometry_srid, geometry=type))
-        return True
+        geometryColumns.append(name)
+        cur.execute(sql.format(dataset=datasetName, geometry_column=name, srid=geometry_srid, geometry=type))
+        return name
     except:
         print("Error creando la geometria, esta postgis disponible en {} ? ".format(postgres_dbname), "Try: create extension postgis;")
-        return False
-
-
-def createGeomFromKML(coordinates, point=False, linestring=False, polygon=False):
-    coordinates = coordinates.strip().replace("\n","")
-
-    if point:
-        coords = coordinates.split(",")
-        return buildPointSQL(coords[0].strip(), coords[1].strip())
-    elif linestring:
-        query = "ST_GeomFromText('LINESTRING("
-        for coords_row in coordinates.split(" "):
-            coords = coords_row.split(",")
-            if(len(coords)>=2):
-                query += coords[0].strip() + " " + coords[1].strip() + ","
-
-        return query[0:-1] + ")', " + geometry_srid + ")"
-    elif polygon:
-        query ="ST_GeomFromText('POLYGON(("
-        for coords_row in coordinates.split(" "):
-            coords = coords_row.split(",")
-            if(len(coords)>=2):
-                query += coords[0].strip() + " " + coords[1].strip() + ","
-
-        return query[0:-1] + "))', " + geometry_srid + ")"
+        return None
 
 
 def processKML(file, datasetName, raw_data=None):
     sqlInsert = "INSERT INTO {dataset}(name, description, {geometry_column}{suffixColumn}) VALUES ('{name}','{description}',{geometry})"
 
-    filename = generated_geojson_directory + "/" + file.split("/")[-1].split(".")[0] + ".geojson"
-    kml2geojson.main.convert(file, generated_geojson_directory)
+    filename = tempDirectory + "/" + file.split("/")[-1].split(".")[0] + ".geojson"
 
-    print("geojson generated ->", filename)
+    print("creating geojson ->", filename)
 
+    kml2geojson.main.convert(file, tempDirectory) #parse
     processGeojson(filename, datasetName)
 
-    # if raw_data is None:
-    #     with open(file, "rb") as f:
-    #         raw_data = f.read()
-    #         f.close()
-    #
-    # try:
-    #     root = objectify.fromstring(raw_data)
-    #
-    #     # remove namespaces
-    #     for elem in root.getiterator():
-    #         if not hasattr(elem.tag, 'find'): continue  # (1)
-    #         i = elem.tag.find('}')
-    #         if i >= 0:
-    #             elem.tag = elem.tag[i+1:]
-    #
-    #     objectify.deannotate(root, cleanup_namespaces=True)
-    # except:
-    #     print("Error parseando el archivo.\n")
-    #     return
-    #
-    # #flags
-    # pointColumn = False
-    # linestringColumn = False
-    # polygonColumn = False
-    #
-    # cur = conn.cursor()
-    #
-    # sql = "DROP TABLE IF EXISTS " + datasetName + ";CREATE TABLE " + datasetName + "(gid serial PRIMARY KEY, name text, description text)"
-    #
-    # try:
-    #     cur.execute(sql)
-    # except:
-    #     print("Error creando la tabla " + datasetName, sql)
-    #     return
-    #
-    # counter_points = 0
-    # counter_linestring = 0
-    # counter_polygon = 0
-    # for pm in root.findall(".//Placemark"):
-    #     if kml2geojson.main.build_feature(pm) is None:
-    #         print("NONE")
-    #     else:
-    #         print("NOT NONE")
-    #     try:
-    #         name=pm.name.text.strip().replace("'","''")
-    #     except:
-    #         print("No name found, skipping row - ")# + etree.tostring(pm))
-    #         continue
-    #
-    #     try:
-    #         description=pm.description.text.replace("\n","").strip().replace("'","''")
-    #     except:
-    #         description=""
-    #
-    #     if hasattr(pm, 'Point'):
-    #         if not pointColumn:
-    #             if createGeometryColumn(cur, datasetName, "POINT", "_point"):
-    #                 pointColumn = True
-    #             else: continue
-    #
-    #         sql = sqlInsert.format(dataset=datasetName,geometry_column=geometry_column, suffixColumn="_point", name=name, description=description, geometry=createGeomFromKML(pm.Point.coordinates.text, point=True))
-    #         try:
-    #             cur.execute(sql)
-    #             counter_points += 1
-    #         except:
-    #             print("Error inserting in the table, skipping: " + sql)
-    #             continue
-    #
-    #
-    #     elif hasattr(pm, 'LineString'):
-    #         if not linestringColumn:
-    #             if createGeometryColumn(cur, datasetName, "LINESTRING", "_linestring"):
-    #                 linestringColumn = True
-    #             else: continue
-    #
-    #         sql = sqlInsert.format(dataset=datasetName,geometry_column=geometry_column, suffixColumn="_linestring", name=name, description=description, geometry=createGeomFromKML(pm.LineString.coordinates.text, linestring=True))
-    #         try:
-    #             cur.execute(sql)
-    #             counter_linestring += 1
-    #         except:
-    #             print("Error inserting in the table, skipping: " + sql)
-    #             continue
-    #
-    #     elif hasattr(pm, 'Polygon'):
-    #         if not polygonColumn:
-    #             if createGeometryColumn(cur, datasetName, "POLYGON", "_polygon"):
-    #                 polygonColumn = True
-    #             else: continue
-    #
-    #         sql = sqlInsert.format(dataset=datasetName,geometry_column=geometry_column, suffixColumn="_polygon", name=name, description=description, geometry=createGeomFromKML(pm.Polygon.outerBoundaryIs.LinearRing.coordinates.text, polygon=True))
-    #         try:
-    #             cur.execute(sql)
-    #             counter_polygon += 1
-    #         except:
-    #             print("Error inserting in the table, skipping: " + sql)
-    #             continue
-    #
-    # analyzeTable(datasetName)
-    # print("Registros creados\n\tPuntos: {}\n\tLinestring: {}\n\tPolygon: {}\n".format(counter_points, counter_linestring, counter_polygon))
+    clean()
 
 
 def processSHP(file, datasetName):
@@ -301,6 +202,14 @@ def processCSV(file, datasetName):
         inputValues = inputValues + geometry_column + ")"
         sql = sql[0:-1] + ");"
 
+
+        # create table
+        # try:
+        #     createTableSQL(datasetName, columns, columnsType)
+        # except psycopg2.Error as e:
+        #     print("Error creando la tabla --- ", e)
+        #     return
+
         try:
             cur.execute(sql)
             print("Nueva tabla creada " + datasetName)
@@ -308,7 +217,7 @@ def processCSV(file, datasetName):
             print("Error creando la tabla " + datasetName, sql + "\n")
             return
 
-        if not createGeometryColumn(cur, datasetName, "POINT"):
+        if createGeometryColumn(cur, datasetName, "POINT") is not None:
             return
 
 
@@ -357,14 +266,8 @@ def createTableSQL(datasetName, columns, columnsType):
         sql += "," + header.lower() + " {}".format(columnsType[header])
     sql += ");"
 
-    try:
-        conn.cursor().execute(sql)
-
-        print("Nueva tabla creada " + datasetName)
-        return True
-    except:
-        print("Error creando la tabla " + datasetName, sql + "\n")
-        return False
+    print("creating table {}\n".format(sql))
+    conn.cursor().execute(sql)
 
 
 def isValidGeojson(geojson):
@@ -382,6 +285,7 @@ def processGeojson(file, datasetName):
 
         # build table columns
         columns = []
+        geometryColumns = []
         columnsType = {}
         skip = ["styleUrl"]
         for key in data["features"][0]["properties"]:
@@ -390,41 +294,27 @@ def processGeojson(file, datasetName):
                 columnsType[key] = getObjType(data["features"][0]["properties"][key])
 
         # create table
-        if not createTableSQL(datasetName, columns, columnsType):
+        try:
+            createTableSQL(datasetName, columns, columnsType)
+        except psycopg2.Error as e:
+            print("Error creando la tabla --- ", e)
             return
-
-        pointColumnCreated = False
-        linestringColumnCreated = False
-        polygonColumnCreated = False
 
         cur = conn.cursor()
 
+        columnsCreatedFlags = {}
         counter = 0
-
         for feature in data["features"]:
             if isValidGeojson(feature):
                 geometryType = feature["geometry"]["type"]
+                columnString = ','.join(columns).lower()
 
-                columnString = ', '.join(columns).lower()
+                if not hasattr(columnsCreatedFlags, geometryType):
+                    # create geometry column for geometry type
+                    columnsCreatedFlags[geometryType] = True
+                    geometryColumns.append(createGeometryColumn(cur, datasetName, geometryType.upper(), "_{type}".format(geometryType.lower())))
 
-                if geometryType=="Point":
-                    if not pointColumnCreated:
-                        createGeometryColumn(cur, datasetName, "POINT", "_point")
-                        pointColumnCreated = True
-
-                    columnString += "," + geometry_column + "_point"
-                elif geometryType=="LineString":
-                    if not linestringColumnCreated:
-                        createGeometryColumn(cur, datasetName, "LINESTRING", "_linestring")
-                        linestringColumnCreated = True
-
-                    columnString += "," + geometry_column + "_linestring"
-                elif geometryType=="Polygon":
-                    if not linestringColumnCreated:
-                        createGeometryColumn(cur, datasetName, "POLYGON", "_polygon")
-                        polygonColumnCreated = True
-
-                    columnString += "," + geometry_column + "_polygon"
+                columnString += ",{geometry_column}_{suffix}".format(geometry_column=geometry_column, suffix=geometryType.lower())
 
                 values = []
                 for column in columns:
@@ -437,7 +327,6 @@ def processGeojson(file, datasetName):
                 feature["geometry"]["coordinates"] = coordinates
                 values.append("ST_SetSRID(ST_GeomFromGeoJSON('" + json.dumps(feature["geometry"]) + "'),4326)")
 
-
                 sql = sqlInsert.format(dataset=datasetName, columns=columnString, values=",".join(values))
                 try:
                     counter += 1
@@ -445,41 +334,23 @@ def processGeojson(file, datasetName):
                 except:
                     print("Error inserting in the table, skipping: " + sql)
 
+        if len(geometryColumns) == 1:
+            # try to rename to default name
+            try:
+                cur.execute("ALTER TABLE {table_name} RENAME COLUMN {column_current_name} TO {geometry_column}".format(table_name=datasetName, column_current_name=geometryColumns[0], geometry_column=geometry_column))
+                geometryColumns[0] = geometry_column
+            except:
+                pass
 
-        print("Registros creados: ", counter)
+        # spatial index
+        for column in geometryColumns:
+            createIndex(datasetName, column)
 
-        #
-        # if not createGeometryColumn(cur, datasetName, "POINT"):
-        #     return
+        # optimize table
+        analyzeTable(datasetName)
+        print("Registros creados: {}\n".format(counter))
 
-        # for feature in data["features"][0]:
-        #     if(headers == None):
-        #         headers = []
-        #         for key in feature["properties"]:
-        #             if(key not in skip):
-        #                 headers.append(key.lower())
-        #
-        #         print(headers)
+def clean():
+    shutil.rmtree(tempDirectory)
 
-
-
-            # print(feature)
-
-
-if fileType=="csv":
-    processCSV(filePath, newTableName)
-elif fileType=="shp":
-    processSHP(filePath, newTableName)
-elif fileType=="kml":
-    processKML(filePath, newTableName)
-elif fileType=="kmz":
-    print("Procesando kmz..." + filePath + " - " + newTableName)
-
-    try:
-        zip=ZipFile(filePath)
-        for z in zip.filelist:
-            if z.filename[-4:] == '.kml':
-                suffix = "_" + z.filename.split(".")[-2]
-                processKML(filePath, newTableName+suffix, raw_data=zip.read(z))
-    except error:
-        print(error)
+main()
