@@ -52,8 +52,6 @@ csv_delimiter = ","
 geometry_column = "the_geom"
 geometry_srid = "4326"
 
-tempDirectory = "temp"
-
 try:
     conn = psycopg2.connect(dbname=POSTGRES_DBNAME, user=POSTGRES_USER, host=POSTGRES_HOST, password=POSTGRES_PASSWORD, port=POSTGRES_PORT)
     conn.autocommit = True
@@ -229,12 +227,15 @@ def processGeojson(file, datasetName, data=None):
                     else:
                         values.append(str(properties[column]))
 
+                if geometryType == "Point":
+                    feature["geometry"]["coordinates"] = feature["geometry"]["coordinates"][0:2]
+
                 values.append("ST_SetSRID(ST_GeomFromGeoJSON('" + json.dumps(feature["geometry"]) + "'),4326)")
 
                 sql = sqlInsert.format(dataset=datasetName, columns=columnString, values=",".join(values), geometry_column=geometry_column, suffix="_"+geometryType.lower())
                 try:
-                    counter += 1
                     cur.execute(sql)
+                    counter += 1
                 except:
                     print("Error inserting in the table, skipping: " + sql)
 
