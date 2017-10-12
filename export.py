@@ -9,7 +9,10 @@ import re
 
 from lxml import etree
 from lxml import objectify
+import lxml.html as htmlParser
 import xml.dom.minidom as md
+
+import xml
 
 import pandas as pd
 import psycopg2
@@ -17,9 +20,11 @@ import psycopg2
 import kml2geojson
 import json
 
-from zipfile import ZipFile
+import zipfile
 
 import shutil
+
+import unidecode
 
 if len(sys.argv) < 3:
     print("Uso: python3 export.py file table_name")
@@ -28,14 +33,7 @@ if len(sys.argv) < 3:
 
 filePath = sys.argv[1]
 newTableName = sys.argv[2]
-fileType = filePath.split("/")[-1].split(".")[1].strip().lower()
-
-print("Procesando " + fileType + "... " + filePath + " - " + newTableName)
-
-# check if the file is empty
-if os.stat(filePath).st_size < 5: #size in bytes
-    print("Error -- Archivo vacio\n")
-    sys.exit()
+fileType = filePath.split(".")[-1].strip().split("?")[0].lower()
 
 
 POSTGRES_DBNAME = os.getenv("POSTGRES_DBNAME") if os.getenv("POSTGRES_DBNAME") is not None else "import"
@@ -60,6 +58,13 @@ except:
     sys.exit()
 
 def main():
+    print("Procesando " + fileType + "... " + filePath + " - " + newTableName)
+
+    # check if the file is empty
+    if os.stat(filePath).st_size < 5: #size in bytes
+        print("Error -- Archivo vacio\n")
+        sys.exit()
+
     if fileType=="csv":
         processCSV(filePath, newTableName)
     elif fileType=="shp":
@@ -70,6 +75,8 @@ def main():
         processKMZ(filePath, newTableName)
     elif fileType=="geojson":
         processGeojson(filePath, newTableName)
+    else:
+        print("Formato no soportado\n", fileType)
 
 
 def processCSV(file, datasetName):
@@ -222,8 +229,9 @@ def processGeojson(file, datasetName, data=None):
 
                 values = []
                 for column in columns:
+                    aux = "" if properties[column] is None else properties[column]
                     if columnsType[column] == "text":
-                        values.append("'" + properties[column] + "'")
+                        values.append("'" + aux + "'")
                     else:
                         values.append(str(properties[column]))
 
@@ -256,16 +264,66 @@ def processGeojson(file, datasetName, data=None):
         print("Registros creados: {}\n".format(counter))
 
 
+def processSHP(file, datasetName):
+    conn.cursor().execute("DROP TABLE IF EXISTS " + datasetName)
+
+    p1 = subprocess.Popen(["shp2pgsql", "-c", "-s", geometry_srid, "-g", geometry_column, "-I", file, "public."+datasetName], stdout=subprocess.PIPE)
+    p2 = subprocess.Popen(["psql", "-h", POSTGRES_HOST, "-p", POSTGRES_PORT,"-d", POSTGRES_DBNAME, "-U", POSTGRES_USER], stdin=p1.stdout, stdout=subprocess.PIPE)
+
+    p1.stdout.close()
+    output,err=p2.communicate()
+
+    if(err):
+        print("Error", err)
+    else:
+        print("\n")
+
+
+def processKML(file, datasetName, data=None):
+    if data is None:
+        with open(file) as f:
+            processKML(file, datasetName, data=f.read())
+    else:
+        kml2geojson.main.GEOTYPES = ['Polygon', 'LineString', 'Point']
+
+        print("parsing to geojson")
+
+        try:
+            geojson = kml2geojson.main.build_feature_collection(md.parseString(data))
+
+            # extract data from nested tables
+            for element in geojson["features"]:
+                properties = {}
+
+                for prop in element["properties"]:
+                    if "<table>" in element["properties"][prop]:
+                        page = htmlParser.document_fromstring(element["properties"][prop])
+
+                        for row in page.xpath("body/table")[0].findall("tr"):
+                            childs = row.findall("td")
+                            if len(childs) == 2:
+                                variableName = getValidColumnName(childs[0].text)
+                                properties[variableName] = getValidTextValue(childs[1].text)
+                    else:
+                        properties[getValidColumnName(prop)] = getValidTextValue(element["properties"][prop])
+
+                element["properties"] = properties
+
+            processGeojson(None, datasetName, data=geojson)
+        except xml.parsers.expat.ExpatError as err:
+            print("Error parseando el archivo.", err, "\n");
+            pass
+
 
 def processKMZ(file, datasetName):
     try:
-        zip=ZipFile(filePath)
+        zip = zipfile.ZipFile(filePath)
         for z in zip.filelist:
             if z.filename[-4:] == '.kml':
                 suffix = "_" + z.filename.split(".")[-2]
                 processKML(None, newTableName+suffix, data=zip.read(z))
-    except error:
-        print(error)
+    except zipfile.BadZipFile as error:
+        print(error + "\n")
 
 
 
@@ -294,33 +352,6 @@ def createGeometryColumn(cur, datasetName, type, suffixColumn=""):
     return name
 
 
-def processKML(file, datasetName, data=None):
-    if data is None:
-        with open(file) as f:
-            processKML(file, datasetName, data=f.read())
-    else:
-        kml2geojson.main.GEOTYPES = ['Polygon', 'LineString', 'Point']
-
-        print("parsing to geojson")
-        geojson = kml2geojson.main.build_feature_collection(md.parseString(data))
-        processGeojson(None, datasetName, data=geojson)
-
-
-def processSHP(file, datasetName):
-    conn.cursor().execute("DROP TABLE IF EXISTS " + datasetName)
-
-    p1 = subprocess.Popen(["shp2pgsql", "-c", "-s", geometry_srid, "-g", geometry_column, "-I", file, "public."+datasetName], stdout=subprocess.PIPE)
-    p2 = subprocess.Popen(["psql", "-h", POSTGRES_HOST, "-p", POSTGRES_PORT,"-d", POSTGRES_DBNAME, "-U", POSTGRES_USER], stdin=p1.stdout, stdout=subprocess.PIPE)
-
-    p1.stdout.close()
-    output,err=p2.communicate()
-
-    if(err):
-        print("Error", err)
-    else:
-        print("\n")
-
-
 def getObjType(obj):
     try:
         int(obj)
@@ -333,8 +364,14 @@ def getObjType(obj):
             return "text"
 
 
+def getValidTextValue(text):
+    if text is None:
+        return ""
+    else:
+        return text.replace("'","''")
+
 def getValidColumnName(column):
-    return column.lower().replace("-","_").replace(" ","_")
+    return unidecode.unidecode(column).lower().strip().replace("-","_").replace(".","_").replace(" ","_").replace(":","")
 
 def createTable(datasetName, columns, columnsType):
     sql = "DROP TABLE IF EXISTS " + datasetName + ";CREATE TABLE " + datasetName + "(gid serial PRIMARY KEY"
