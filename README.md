@@ -1,19 +1,22 @@
 # hamelin-exporter
-----------------
 
 Script de ayuda para la exportación de archivos con información geográfica a tablas de PostGIS.
 
 Archivos soportados:
 - csv
 - shp
+- geojson
 - kml/kmz
 
 Librerias externas de python:
 - lxml
 - pandas
 - psycopg2
+- kml2geojson
+- unidecode
+- zipfile
 
-Puedes instalarlas con: ```$ pip3 install --user lxml pandas psycopg2```
+Puedes instalarlas con: ```$ pip3 install --user lxml pandas psycopg2 kml2geojson unidecode zipfile```
 
 ## Requisitos
 
@@ -29,6 +32,7 @@ Puedes instalarlas con: ```$ pip3 install --user lxml pandas psycopg2```
 - Red Hat / Centos / Scientific Linux: http://www.postgresonline.com/journal/archives/362-An-almost-idiots-guide-to-install-PostgreSQL-9.5,-PostGIS-2.2-and-pgRouting-2.1.0-with-Yum.html
 - Ubuntu / Debian: https://trac.osgeo.org/postgis/wiki/UsersWikiPostGIS23UbuntuPGSQL96Apt
 - Arch Linux: ```$ sudo pacman -S postgresql postgis```
+- Docker: ```$ docker pull mdillon/postgis```
 
 ##### Specs:
 - python 3: Se usa el motor de python 3 para poder resolver problemas logicos con el encoding de los datos
