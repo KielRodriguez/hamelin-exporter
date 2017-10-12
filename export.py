@@ -7,23 +7,16 @@ import sys
 import subprocess
 import re
 
-from lxml import etree
-from lxml import objectify
-import lxml.html as htmlParser
+import xml
 import xml.dom.minidom as md
 
-import xml
+import lxml.html as htmlParser
 
 import pandas as pd
 import psycopg2
-
 import kml2geojson
 import json
-
 import zipfile
-
-import shutil
-
 import unidecode
 
 if len(sys.argv) < 3:
