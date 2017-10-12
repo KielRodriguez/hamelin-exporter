@@ -289,8 +289,10 @@ def processKML(file, datasetName, data=None):
                 properties = {}
 
                 for prop in element["properties"]:
-                    if "<table>" in element["properties"][prop]:
-                        page = htmlParser.document_fromstring(element["properties"][prop])
+                    value = str(element["properties"][prop])
+
+                    if "<table>" in value:
+                        page = htmlParser.document_fromstring(value)
 
                         for row in page.xpath("body/table")[0].findall("tr"):
                             childs = row.findall("td")
@@ -298,7 +300,7 @@ def processKML(file, datasetName, data=None):
                                 variableName = getValidColumnName(childs[0].text)
                                 properties[variableName] = getValidTextValue(childs[1].text)
                     else:
-                        properties[getValidColumnName(prop)] = getValidTextValue(element["properties"][prop])
+                        properties[getValidColumnName(prop)] = getValidTextValue(value)
 
                 element["properties"] = properties
 
@@ -316,7 +318,7 @@ def processKMZ(file, datasetName):
                 suffix = "_" + z.filename.split(".")[-2]
                 processKML(None, newTableName+suffix, data=zip.read(z))
     except zipfile.BadZipFile as error:
-        print(error + "\n")
+        print(error, "\n")
 
 
 
