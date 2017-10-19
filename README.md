@@ -39,8 +39,11 @@ Puedes instalarlas con: ```$ pip3 install --user lxml pandas psycopg2 kml2geojso
 
 ## Uso
 ```$ python3 fileToPostgis.py file new_table_name```
+
 Si deseas procesar todos los archivos dentro de un directorio puedes hacerlo con el script directoryLoop.py
+
 ```$ python3 directoryLoop.py directoryToProcess```
+
 El script tomara el nombre del archivo como nombre para la nueva tabla remplazando " " y "-" por "_" y agregara el caracter "a" al inicio para evitar problemas de nombrado.
 
 ## Licencia
