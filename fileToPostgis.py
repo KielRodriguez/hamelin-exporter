@@ -49,7 +49,7 @@ def main():
     filePath = sys.argv[1]
     newTableName = getValidTableName(sys.argv[2])
     fileType = filePath.split(".")[-1].strip().split("?")[0].lower()
-    
+
     print("Procesando " + fileType + "... " + filePath + " - " + newTableName)
 
     # check if the file is empty
@@ -315,7 +315,7 @@ def processKML(file, datasetName, data=None):
 
 def processKMZ(file, datasetName):
     try:
-        zip = zipfile.ZipFile(filePath)
+        zip = zipfile.ZipFile(file)
         for z in zip.filelist:
             if z.filename[-4:] == '.kml':
                 suffix = "_" + z.filename.split(".")[-2]
