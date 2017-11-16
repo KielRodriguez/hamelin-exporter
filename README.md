@@ -14,9 +14,8 @@ Librerias externas de python:
 - psycopg2
 - kml2geojson
 - unidecode
-- zipfile
 
-Puedes instalarlas con: ```$ pip3 install --user lxml pandas psycopg2 kml2geojson unidecode zipfile```
+Puedes instalarlas con: ```$ pip3 install --user lxml pandas psycopg2 kml2geojson unidecode```
 
 ## Requisitos
 
