@@ -51,7 +51,7 @@ except:
 
 def main():
     filePath = sys.argv[1]
-    newTableName = getValidTableName(sys.argv[2])
+    newTableName = getValidName(sys.argv[2])
     fileType = filePath.split(".")[-1].strip().split("?")[0].lower()
 
 
@@ -60,7 +60,7 @@ def main():
 
     # check if the file is empty
     if os.stat(filePath).st_size < 5: # size in bytes
-        print("Error -- Archivo vacio\n")
+        print("Error -- Archivo vacio")
         return
 
 
@@ -77,11 +77,11 @@ def main():
     elif fileType=="geojson":
         processGeojson(filePath, newTableName)
     else:
-        print("Formato no soportado\n", fileType)
+        print("Formato no soportado", fileType)
 
 
 def processGeojson(file, datasetName, data=None):
-    sqlInsert = "INSERT INTO {dataset}({columns}{geometry_column}{suffix}) VALUES ({values})"
+    sqlInsert = "INSERT INTO \"{dataset}\"({columns}{geometry_column}{suffix}) VALUES ({values})"
 
     if data is None:
         with open(file) as geojsonFile:
@@ -94,15 +94,13 @@ def processGeojson(file, datasetName, data=None):
         columnString = ""
 
         textColumns = ["cve_ent", "cve_mun", "cve_loc", "cvegeo"] # numeric columns that should be treated as str (catalogs)
-        skipColumns = ["styleUrl", "#styleUrl"]
         for column in data["features"][0]["properties"]:
-            if( column not in skipColumns ):
-                validColumnName = getValidColumnName(column)
+            validColumnName = getValidName(column)
 
-                columns.append(column)
-                validColumns.append(validColumnName)
-                columnsType[validColumnName] = "text" if validColumnName in textColumns else getObjType(data["features"][0]["properties"][column])
-                columnString += validColumnName + ","
+            columns.append(column)
+            validColumns.append(validColumnName)
+            columnsType[validColumnName] = "text" if validColumnName in textColumns else getObjType(data["features"][0]["properties"][column])
+            columnString += validColumnName + ","
 
 
         # create table
@@ -179,7 +177,7 @@ def processGeojson(file, datasetName, data=None):
 
         # optimize table
         analyzeTable(datasetName)
-        print("Registros creados: {}\n".format(counter))
+        print("Registros creados: {}".format(counter))
 
 
 def processJSON(file, datasetName, data=None):
@@ -201,6 +199,10 @@ def processJSON(file, datasetName, data=None):
                 latitudColumn = column
             elif re.match(CSV_LONGITUDE_COLUMN, column) is not None:
                 longitudColumn = column
+
+        if latitudColumn is None or longitudColumn is None:
+            print("No se encontro información geografica.")
+            return
 
         for row in data:
             feature = {
@@ -228,7 +230,7 @@ def processCSV(file, datasetName, encoding="utf-8"):
             # try to parse file with another encoding
             processCSV(file, datasetName, encoding=encodingAux)
         else:
-            print("Error parseando el archivo\n")
+            print("Error parseando el archivo")
 
         return
 
@@ -254,8 +256,6 @@ def processSHP(file, datasetName):
 
     if(err):
         print("Error", err)
-    else:
-        print("\n")
 
 
 def processKML(file, datasetName, data=None):
@@ -264,7 +264,6 @@ def processKML(file, datasetName, data=None):
             processKML(file, datasetName, data=f.read())
     else:
         kml2geojson.main.GEOTYPES = ['Polygon', 'LineString', 'Point']
-
         print("parsing to geojson")
 
         try:
@@ -280,22 +279,23 @@ def processKML(file, datasetName, data=None):
                 for prop in element["properties"]:
                     value = str(element["properties"][prop])
 
-                    if "<table>" in value:
+                    if "<table" in value:
                         page = htmlParser.document_fromstring(value)
 
                         for row in page.xpath("body/table")[0].findall("tr"):
                             childs = row.findall("td")
                             if len(childs) == 2:
-                                variableName = getValidColumnName(childs[0].text)
-                                properties[variableName] = getValidTextValue(childs[1].text)
+                                variableName = getValidName(childs[0].text)
+                                properties[getValidName(variableName)] = getValidTextValue(childs[1].text)
                     else:
-                        properties[getValidColumnName(prop)] = getValidTextValue(value)
+                        if(prop != "styleUrl"):
+                            properties[getValidName(prop)] = getValidTextValue(value)
 
                 element["properties"] = properties
 
             processGeojson(None, datasetName, data=geojson)
         except xml.parsers.expat.ExpatError as err:
-            print("Error parseando el archivo.", err, "\n");
+            print("Error parseando el archivo.", err);
             pass
 
 
@@ -307,33 +307,7 @@ def processKMZ(file, datasetName):
                 suffix = "_" + z.filename.split(".")[-2]
                 processKML(None, newTableName+suffix, data=zip.read(z))
     except zipfile.BadZipFile as error:
-        print(error, "\n")
-
-
-
-def analyzeTable(datasetName):
-    conn.cursor().execute("ANALYZE " + datasetName)
-
-
-def createIndex(datasetName, geomColumn, indexNameSuffix=""):
-    sql = "CREATE INDEX " + datasetName + "_gix" + indexNameSuffix + " ON " + datasetName + " USING GIST (" + geomColumn + ");"
-
-    try:
-        conn.cursor().execute(sql)
-    except:
-        print("Error creando el índice espacial.", sql)
-
-
-def buildPointSQL(lon, lat):
-    return "ST_SetSRID(ST_MakePoint(" + str(lon) + "," + str(lat) + ")," + GEOMETRY_COLUMN_SRID + ")"
-
-
-def createGeometryColumn(cur, datasetName, type, suffixColumn=""):
-    sql = "SELECT AddGeometryColumn('{dataset}','{geometry_column}',{srid},'{geometry}',2)"
-    name = "{geometry_column}{suffixColumn}".format(geometry_column=GEOMETRY_COLUMN_NAME,suffixColumn=suffixColumn);
-
-    cur.execute(sql.format(dataset=datasetName, geometry_column=name, srid=GEOMETRY_COLUMN_SRID, geometry=type))
-    return name
+        print(error)
 
 
 def getObjType(obj):
@@ -349,27 +323,42 @@ def getObjType(obj):
 
 
 def getValidTextValue(text):
-    if text is None:
-        return ""
-    else:
-        return text.replace("'","''")
+    return "" if text is None else text.replace("'","''")
 
 
-def getValidColumnName(column):
-    return unidecode.unidecode(column).lower().strip().replace("-","_").replace(".","_").replace(" ","_").replace(":","")
-
-
-def getValidTableName(name):
-    return "a" + name.lower().replace(" ","_").replace("-","_").strip()
+def getValidName(currentName):
+    return unidecode.unidecode(currentName).lower().strip().replace("-","_").replace(".","_").replace(" ","_").replace(":","")
 
 
 def createTable(datasetName, columns, columnsType):
-    sql = "DROP TABLE IF EXISTS " + datasetName + ";CREATE TABLE " + datasetName + "(gid serial PRIMARY KEY"
+    sql = "DROP TABLE IF EXISTS \"" + datasetName + "\";CREATE TABLE \"" + datasetName + "\"(gid serial PRIMARY KEY"
     for header in columns:
         sql += ", {column} {column_type}".format(column=header, column_type=columnsType[header])
     sql += ");"
 
-    print("creating table {}".format(sql))
+    print("creating table - {}".format(sql))
     conn.cursor().execute(sql)
+
+
+def analyzeTable(datasetName):
+    conn.cursor().execute("ANALYZE \"{}\"".format(datasetName))
+
+
+def createIndex(datasetName, geomColumn, indexNameSuffix=""):
+    sql = "CREATE INDEX \"{dataset}_gix{indexNameSuffix}\" ON \"{dataset}\" USING GIST ({geomColumn})".format(dataset=datasetName, indexNameSuffix=indexNameSuffix, geomColumn=geomColumn)
+
+    try:
+        conn.cursor().execute(sql)
+    except:
+        print("Error creando el índice espacial.", sql)
+
+
+def createGeometryColumn(cur, datasetName, type, suffixColumn=""):
+    sql = "SELECT AddGeometryColumn('{dataset}','{geometry_column}',{srid},'{geometry}',2)"
+    name = "{geometry_column}{suffixColumn}".format(geometry_column=GEOMETRY_COLUMN_NAME,suffixColumn=suffixColumn);
+
+    cur.execute(sql.format(dataset=datasetName, geometry_column=name, srid=GEOMETRY_COLUMN_SRID, geometry=type))
+    return name
+
 
 main()
