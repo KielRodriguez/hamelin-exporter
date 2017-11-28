@@ -8,14 +8,10 @@ Archivos soportados:
 - geojson/json
 - kml/kmz
 
-Librerias externas de python:
-- lxml
-- pandas
-- psycopg2
-- kml2geojson
-- unidecode
-
-Puedes instalarlas con: ```$ pip3 install --user lxml pandas psycopg2 kml2geojson unidecode```
+Geografias soportadas:
+- Point
+- Polygon
+- LineString
 
 ## Requisitos
 
@@ -25,6 +21,15 @@ Puedes instalarlas con: ```$ pip3 install --user lxml pandas psycopg2 kml2geojso
 - POSTGRES_HOST=localhost
 - POSTGRES_PASSWORD=password
 - POSTGRES_PORT=port
+
+#### Librerias de python
+- lxml
+- pandas
+- psycopg2
+- kml2geojson
+- unidecode
+
+Puedes instalarlas con: ```$ pip3 install --user lxml pandas psycopg2 kml2geojson unidecode```
 
 ##### PostGIS
 ¿Cómo instalar PostGIS?
@@ -39,11 +44,13 @@ Puedes instalarlas con: ```$ pip3 install --user lxml pandas psycopg2 kml2geojso
 ## Uso
 ```$ python3 fileToPostgis.py file new_table_name```
 
-Si deseas procesar todos los archivos dentro de un directorio puedes hacerlo con el script directoryLoop.py
+Solo se permite el uso de letras, numeros y "\_" en los nombres de table, cualquier otro caracter sera reemplazado por "\_".
+
+Si deseas procesar todos los archivos dentro de un directorio puedes hacerlo con el script directoryLoop.py:
 
 ```$ python3 directoryLoop.py directoryToProcess```
 
-El script tomara el nombre del archivo como nombre para la nueva tabla remplazando " " y "-" por "_" y agregara el caracter "a" al inicio para evitar problemas de nombrado.
+\* El script tomara el nombre del archivo como nombre para la nueva tabla.
 
 ## Licencia
 hamelin-exporter es software libre, y puede ser redistribuido bajo los términos especificados en nuestra [licencia](https://datos.gob.mx/libreusomx).
