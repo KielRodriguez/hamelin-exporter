@@ -7,7 +7,7 @@ import sys
 import subprocess
 
 if len(sys.argv) < 2:
-    print("\nError: Necesitas especificar un directorio")
+    print("Error: Necesitas especificar un directorio")
     sys.exit()
 
 def getTableName(filename):
@@ -23,5 +23,6 @@ for root, dirnames, filenames in os.walk(rootDirectory):
         if re.match(supportedTypes, filename):
             call = os.path.abspath("fileToPostgis.py") + " " + os.path.abspath(resource) + " " + getTableName(filename)
             subprocess.call("python3 " + call, shell=True, stderr=subprocess.STDOUT)
+            print("")
 
-print("\nDone")
+print("Done")
