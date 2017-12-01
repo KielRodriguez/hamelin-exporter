@@ -26,7 +26,7 @@ if len(sys.argv) < 3:
 
 
 # setup
-POSTGRES_DBNAME = os.getenv("POSTGRES_DBNAME") if os.getenv("POSTGRES_DBNAME") is not None else "hamelin"
+POSTGRES_DBNAME = os.getenv("POSTGRES_DBNAME") if os.getenv("POSTGRES_DBNAME") is not None else "open_data"
 POSTGRES_USER = os.getenv("POSTGRES_USER") if os.getenv("POSTGRES_USER") is not None else "postgres"
 POSTGRES_HOST = os.getenv("POSTGRES_HOST") if os.getenv("POSTGRES_HOST") is not None else "172.17.0.1"
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD") if os.getenv("POSTGRES_PASSWORD") is not None else ""
@@ -45,22 +45,24 @@ try:
     conn = psycopg2.connect(dbname=POSTGRES_DBNAME, user=POSTGRES_USER, host=POSTGRES_HOST, password=POSTGRES_PASSWORD, port=POSTGRES_PORT)
     conn.autocommit = True
 except:
-    print("Error en la conexión con postgis.")
+    print("---------- Error en la conexión con postgis.")
     sys.exit()
 
 
 def main():
     filePath = sys.argv[1]
     newTableName = getValidName(sys.argv[2])
-    fileType = filePath.split(".")[-1].strip().split("?")[0].lower()
+    fileType = re.search('(^\w+)', filePath.split(".")[-1].strip()).group(0)
 
+    printMessage("Procesando " + fileType + "... " + filePath + " - " + newTableName)
 
-    print("Procesando " + fileType + "... " + filePath + " - " + newTableName)
-
-
-    # check if the file is empty
-    if os.stat(filePath).st_size < 5: # size in bytes
-        print("Error -- Archivo vacio")
+    try:
+        # check if the file is empty
+        if os.stat(filePath).st_size < 5: # size in bytes
+            printMessage("---------- Error: Archivo vacio")
+            return
+    except:
+        printMessage("---------- Error: Archivo no encontrado")
         return
 
 
@@ -77,7 +79,7 @@ def main():
     elif fileType=="geojson":
         processGeojson(filePath, newTableName)
     else:
-        print("Formato no soportado", fileType)
+        printMessage("Formato no soportado: " + fileType)
 
 
 def processGeojson(file, datasetName, data=None):
@@ -107,7 +109,7 @@ def processGeojson(file, datasetName, data=None):
         try:
             createTable(datasetName, validColumns, columnsType)
         except psycopg2.Error as err:
-            print("Error creando la tabla --- ", err)
+            printMessage("---------- Error creando la tabla: " + str(err))
             return
 
         cur = conn.cursor()
@@ -132,6 +134,18 @@ def processGeojson(file, datasetName, data=None):
             for feature in featuresToProcess:
                 geometryType = feature["geometry"]["type"]
 
+                # validate geometry coordinates
+                if geometryType == "Point":
+                    feature["geometry"]["coordinates"] = feature["geometry"]["coordinates"][0:2]
+                elif geometryType == "Polygon":
+                    for batchCoordinates in feature["geometry"]["coordinates"]:
+                        for index in range(0, len(batchCoordinates)):
+                            batchCoordinates[index] = batchCoordinates[index][0:2]
+                elif geometryType == "LineString":
+                    for index in range(0, len(feature["geometry"]["coordinates"])):
+                        feature["geometry"]["coordinates"][index] = feature["geometry"]["coordinates"][index][0:2]
+
+
                 if not geometryType in columnsCreated:
                     # create geometry column for geometry type
                     try:
@@ -141,18 +155,14 @@ def processGeojson(file, datasetName, data=None):
                         columnsCreated[geometryType] = True
 
                     except psycopg2.Error as err:
-                        print("Error creando columna geografica -- ", err)
+                        printMessage("---------- Error creando columna geografica" + str(err))
                         return
 
 
                 values = []
                 for index in range(0, len(columns)):
-                    aux = "" if properties[ columns[index] ] is None else properties[ columns[index] ]
-
-                    if columnsType[ validColumns[index] ] == "text":
-                        values.append("'" + aux + "'")
-                    else:
-                        values.append(str(properties[ columns[index] ]))
+                    value = "" if properties[ columns[index] ] is None else properties[ columns[index] ]
+                    values.append( getValidSQLValue(value, columnsType[validColumns[index]]) )
 
                 values.append("ST_SetSRID(ST_GeomFromGeoJSON('" + json.dumps(feature["geometry"]) + "'),4326)")
 
@@ -161,13 +171,13 @@ def processGeojson(file, datasetName, data=None):
                     cur.execute(sql)
                     counter += 1
                 except:
-                    print("Error inserting in the table, skipping: " + sql)
+                    printMessage("---------- Error inserting in the table, skipping: " + sql)
 
         if len(geometryColumns) == 1:
             # try to rename to default name
             try:
-                cur.execute("ALTER TABLE {table_name} RENAME COLUMN {column_current_name} TO {geometry_column}".format(table_name=datasetName, column_current_name=geometryColumns[0], geometry_column=GEOMETRY_COLUMN_NAME))
-                geometryColumns[0] = geometry_column
+                cur.execute("ALTER TABLE \"{table_name}\" RENAME COLUMN {column_current_name} TO {geometry_column}".format(table_name=datasetName, column_current_name=geometryColumns[0], geometry_column=GEOMETRY_COLUMN_NAME))
+                geometryColumns[0] = GEOMETRY_COLUMN_NAME
             except:
                 pass
 
@@ -177,7 +187,7 @@ def processGeojson(file, datasetName, data=None):
 
         # optimize table
         analyzeTable(datasetName)
-        print("Registros creados: {}".format(counter))
+        printMessage("Registros creados: {}".format(counter))
 
 
 def processJSON(file, datasetName, data=None):
@@ -185,6 +195,10 @@ def processJSON(file, datasetName, data=None):
         with open(file) as jsonFile:
             processJSON(file, datasetName, data=json.load(jsonFile))
     else:
+        if(len(data)==0):
+            printMessage("---------- Error: Archivo sin información")
+            return
+
         geojson = {
             "type": "FeatureCollection",
             "features": []
@@ -201,7 +215,7 @@ def processJSON(file, datasetName, data=None):
                 longitudColumn = column
 
         if latitudColumn is None or longitudColumn is None:
-            print("No se encontro información geografica.")
+            printMessage("No se encontro información geografica.")
             return
 
         for row in data:
@@ -230,7 +244,7 @@ def processCSV(file, datasetName, encoding="utf-8"):
             # try to parse file with another encoding
             processCSV(file, datasetName, encoding=encodingAux)
         else:
-            print("Error parseando el archivo")
+            printMessage("---------- Error parseando el archivo")
 
         return
 
@@ -255,27 +269,26 @@ def processSHP(file, datasetName):
     output,err=p2.communicate()
 
     if(err):
-        print("Error", err)
+        printMessage("---------- Error: " + str(err))
 
 
-def processKML(file, datasetName, data=None):
+def processKML(file, datasetName, data=None, removeInvalidProperties=False):
     if data is None:
         with open(file) as f:
             processKML(file, datasetName, data=f.read())
     else:
         kml2geojson.main.GEOTYPES = ['Polygon', 'LineString', 'Point']
-        print("parsing to geojson")
 
         try:
+            # remove all Document properties
+            if removeInvalidProperties:
+                data = re.compile("<Documen[^>]*>").sub("<Document>", data)
+
             geojson = kml2geojson.main.build_feature_collection(md.parseString(data))
 
-            # extract data from nested tables
             for element in geojson["features"]:
+                # extract data from nested tables
                 properties = {}
-
-                if element["geometry"]["type"] == "Point":
-                    element["geometry"]["coordinates"] = element["geometry"]["coordinates"][0:2]
-
                 for prop in element["properties"]:
                     value = str(element["properties"][prop])
 
@@ -290,12 +303,14 @@ def processKML(file, datasetName, data=None):
                     else:
                         if(prop != "styleUrl"):
                             properties[getValidName(prop)] = getValidTextValue(value)
-
                 element["properties"] = properties
 
             processGeojson(None, datasetName, data=geojson)
         except xml.parsers.expat.ExpatError as err:
-            print("Error parseando el archivo.", err);
+            if removeInvalidProperties:
+                printMessage("---------- Error parseando el archivo. " + str(err))
+            else:
+                processKML(file, datasetName, data=data, removeInvalidProperties=True)
             pass
 
 
@@ -305,9 +320,9 @@ def processKMZ(file, datasetName):
         for z in zip.filelist:
             if z.filename[-4:] == '.kml':
                 suffix = "_" + z.filename.split(".")[-2]
-                processKML(None, newTableName+suffix, data=zip.read(z))
+                processKML(None, datasetName+suffix, data=zip.read(z))
     except zipfile.BadZipFile as error:
-        print(error)
+        printMessage("El archivo no es tipo zip")
 
 
 def getObjType(obj):
@@ -322,12 +337,26 @@ def getObjType(obj):
             return "text"
 
 
+def getValidSQLValue(value, columnType):
+    auxValue = "NULL"
+    try:
+        if(columnType == "integer"):
+            auxValue = int(obj)
+        elif(columnType == "real"):
+            auxValue = float(obj)
+        else:
+            auxValue = "'" + value + "'"
+    except: pass
+
+    return str(auxValue)
+
+
 def getValidTextValue(text):
     return "" if text is None else text.replace("'","''")
 
 
 def getValidName(currentName):
-    return unidecode.unidecode(currentName).lower().strip().replace("-","_").replace(".","_").replace(" ","_").replace(":","")
+    return re.compile('[^a-z0-9_]').sub("_", unidecode.unidecode(currentName).lower().strip())
 
 
 def createTable(datasetName, columns, columnsType):
@@ -336,21 +365,28 @@ def createTable(datasetName, columns, columnsType):
         sql += ", {column} {column_type}".format(column=header, column_type=columnsType[header])
     sql += ");"
 
-    print("creating table - {}".format(sql))
+    printMessage("creating table - {}".format(sql))
     conn.cursor().execute(sql)
 
 
 def analyzeTable(datasetName):
-    conn.cursor().execute("ANALYZE \"{}\"".format(datasetName))
+    try:
+        conn.cursor().execute("VACUUM ANALYZE \"{}\"".format(datasetName))
+        printMessage("tabla optimizada")
+    except:
+        printMessage("---------- Error optimizando tabla. " + sql)
 
 
-def createIndex(datasetName, geomColumn, indexNameSuffix=""):
-    sql = "CREATE INDEX \"{dataset}_gix{indexNameSuffix}\" ON \"{dataset}\" USING GIST ({geomColumn})".format(dataset=datasetName, indexNameSuffix=indexNameSuffix, geomColumn=geomColumn)
+
+def createIndex(datasetName, geomColumn):
+    indexName = "{dataset}_{geomColumn}_gix".format(dataset=datasetName, geomColumn=geomColumn)
+    sql = "CREATE INDEX \"{indexName}\" ON \"{dataset}\" USING GIST ({geomColumn})".format(dataset=datasetName, geomColumn=geomColumn, indexName=indexName)
 
     try:
         conn.cursor().execute(sql)
+        printMessage("índice espacial " + indexName + " creado")
     except:
-        print("Error creando el índice espacial.", sql)
+        printMessage("---------- Error creando el índice espacial. " + sql)
 
 
 def createGeometryColumn(cur, datasetName, type, suffixColumn=""):
@@ -360,5 +396,9 @@ def createGeometryColumn(cur, datasetName, type, suffixColumn=""):
     cur.execute(sql.format(dataset=datasetName, geometry_column=name, srid=GEOMETRY_COLUMN_SRID, geometry=type))
     return name
 
+def printMessage(text):
+    with open('output_script', 'a') as the_file:
+        the_file.write(text + "\n")
+        print(text)
 
 main()
