@@ -25,4 +25,7 @@ for root, dirnames, filenames in os.walk(rootDirectory):
             subprocess.call("python3 " + call, shell=True, stderr=subprocess.STDOUT)
             print("")
 
+            with open('processed_files', 'a') as the_file:
+                the_file.write(filename + "\n")
+
 print("Done")
