@@ -6,6 +6,7 @@ import math
 import sys
 import subprocess
 import re
+import shutil
 
 import xml
 import xml.dom.minidom as md
@@ -38,6 +39,8 @@ CSV_DELIMITER = ","
 
 GEOMETRY_COLUMN_NAME = "the_geom"
 GEOMETRY_COLUMN_SRID = "4326"
+
+TEMP_FOLDER = "./tmp"
 
 
 # check connection with db
@@ -76,10 +79,39 @@ def main():
         processKMZ(filePath, newTableName)
     elif fileType=="json":
         processJSON(filePath, newTableName)
+    elif fileType=="zip":
+        processZip(filePath, newTableName)
     elif fileType=="geojson":
         processGeojson(filePath, newTableName)
     else:
         printMessage("Formato no soportado: " + fileType)
+
+    if os.path.exists(TEMP_FOLDER):
+        shutil.rmtree(TEMP_FOLDER)
+
+def processZip(file, datasetName):
+    #TODO: Nested search ?
+    try:
+        zip = zipfile.ZipFile(file)
+        validFile = False
+        for z in zip.filelist:
+            if z.filename[-4:] == '.shp':
+                # verify tmp file exists
+                if not os.path.exists(TEMP_FOLDER):
+                    os.makedirs(TEMP_FOLDER)
+
+                # extract zip to tmp folder
+                subprocess.run(["unzip", file, "-d", TEMP_FOLDER])
+
+                processSHP(TEMP_FOLDER + "/" + z.filename, datasetName)
+                validFile = True
+                break
+
+        if not validFile:
+            printMessage("---------- Error: No se encontro archivo shp")
+    except zipfile.BadZipFile as error:
+        printMessage("----------Error: El archivo no es tipo zip")
+
 
 
 def processGeojson(file, datasetName, data=None):
@@ -161,7 +193,12 @@ def processGeojson(file, datasetName, data=None):
 
                 values = []
                 for index in range(0, len(columns)):
-                    value = "" if properties[ columns[index] ] is None else properties[ columns[index] ]
+                    try:
+                        value = "" if properties[ columns[index] ] is None else properties[ columns[index] ]
+                    except:
+                        value = ""
+                        pass
+
                     values.append( getValidSQLValue(value, columnsType[validColumns[index]]) )
 
                 values.append("ST_SetSRID(ST_GeomFromGeoJSON('" + json.dumps(feature["geometry"]) + "'),4326)")
@@ -215,7 +252,7 @@ def processJSON(file, datasetName, data=None):
                 longitudColumn = column
 
         if latitudColumn is None or longitudColumn is None:
-            printMessage("No se encontro información geografica.")
+            printMessage("---------- Error: No se encontro información geografica.")
             return
 
         for row in data:
@@ -260,7 +297,7 @@ def processCSV(file, datasetName, encoding="utf-8"):
 
 
 def processSHP(file, datasetName):
-    conn.cursor().execute("DROP TABLE IF EXISTS " + datasetName)
+    conn.cursor().execute("DROP TABLE IF EXISTS \"" + datasetName + "\"")
 
     p1 = subprocess.Popen(["shp2pgsql", "-c", "-s", GEOMETRY_COLUMN_SRID, "-g", GEOMETRY_COLUMN_NAME, "-I", file, "public."+datasetName], stdout=subprocess.PIPE)
     p2 = subprocess.Popen(["psql", "-h", POSTGRES_HOST, "-p", POSTGRES_PORT,"-d", POSTGRES_DBNAME, "-U", POSTGRES_USER], stdin=p1.stdout, stdout=subprocess.PIPE)
@@ -312,6 +349,8 @@ def processKML(file, datasetName, data=None, removeInvalidProperties=False):
             else:
                 processKML(file, datasetName, data=data, removeInvalidProperties=True)
             pass
+        except:
+            print("---------- Error parseando el archivo.")
 
 
 def processKMZ(file, datasetName):
@@ -322,7 +361,7 @@ def processKMZ(file, datasetName):
                 suffix = "_" + z.filename.split(".")[-2]
                 processKML(None, datasetName+suffix, data=zip.read(z))
     except zipfile.BadZipFile as error:
-        printMessage("El archivo no es tipo zip")
+        printMessage("---------- Error: El archivo no es tipo zip")
 
 
 def getObjType(obj):
