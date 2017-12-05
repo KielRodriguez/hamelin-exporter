@@ -230,7 +230,10 @@ def processGeojson(file, datasetName, data=None):
 def processJSON(file, datasetName, data=None):
     if data is None:
         with open(file) as jsonFile:
-            processJSON(file, datasetName, data=json.load(jsonFile))
+            try:
+                processJSON(file, datasetName, data=json.load(jsonFile))
+            except:
+                printMessage("---------- Error: Archivo no valido")
     else:
         if(len(data)==0):
             printMessage("---------- Error: Archivo sin información")
