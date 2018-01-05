@@ -42,6 +42,8 @@ GEOMETRY_COLUMN_SRID = "4326"
 
 TEMP_FOLDER = "./tmp"
 
+WRITE_LOG = True
+
 
 # check connection with db
 try:
@@ -300,16 +302,27 @@ def processCSV(file, datasetName, encoding="utf-8"):
 
 
 def processSHP(file, datasetName):
-    conn.cursor().execute("DROP TABLE IF EXISTS \"" + datasetName + "\"")
+    cursor = conn.cursor()
+    cursor.execute("DROP TABLE IF EXISTS \"" + datasetName + "\"")
 
-    p1 = subprocess.Popen(["shp2pgsql", "-c", "-s", GEOMETRY_COLUMN_SRID, "-g", GEOMETRY_COLUMN_NAME, "-I", file, "public."+datasetName], stdout=subprocess.PIPE)
-    p2 = subprocess.Popen(["psql", "-h", POSTGRES_HOST, "-p", POSTGRES_PORT,"-d", POSTGRES_DBNAME, "-U", POSTGRES_USER], stdin=p1.stdout, stdout=subprocess.PIPE)
+    if not os.path.exists(TEMP_FOLDER):
+        os.makedirs(TEMP_FOLDER)
 
-    p1.stdout.close()
-    output,err=p2.communicate()
+    printMessage("Creando sql")
 
-    if(err):
-        printMessage("---------- Error: " + str(err))
+    sqlFilePath = TEMP_FOLDER + "/commands.sql"
+    sqlWriter = open(sqlFilePath, "w")
+    subprocess.call(["shp2pgsql", "-c", "-s", GEOMETRY_COLUMN_SRID, "-g", GEOMETRY_COLUMN_NAME, "-I", "-S", file, "public."+datasetName], stdout=sqlWriter)
+
+    sqlWriter.close()
+
+    printMessage("Ejecutando archivo")
+
+    sqlReader = open(sqlFilePath, "r")
+
+    cursor.execute(sqlReader.read())
+
+    printMessage("Tabla creada correctamente")
 
 
 def processKML(file, datasetName, data=None, removeInvalidProperties=False):
@@ -439,8 +452,10 @@ def createGeometryColumn(cur, datasetName, type, suffixColumn=""):
     return name
 
 def printMessage(text):
-    with open('output_script', 'a') as the_file:
-        the_file.write(text + "\n")
-        print(text)
+    print(text)
+
+    if WRITE_LOG:
+        with open('output_script', 'a') as the_file:
+            the_file.write(text + "\n")
 
 main()
