@@ -27,11 +27,11 @@ if len(sys.argv) < 3:
 
 
 # setup
-POSTGRES_DBNAME = os.getenv("POSTGRES_DBNAME") if os.getenv("POSTGRES_DBNAME") is not None else "open_data"
-POSTGRES_USER = os.getenv("POSTGRES_USER") if os.getenv("POSTGRES_USER") is not None else "postgres"
-POSTGRES_HOST = os.getenv("POSTGRES_HOST") if os.getenv("POSTGRES_HOST") is not None else "172.17.0.1"
+POSTGRES_DBNAME = os.getenv("POSTGRES_DBNAME") if os.getenv("POSTGRES_DBNAME") is not None else ""
+POSTGRES_USER = os.getenv("POSTGRES_USER") if os.getenv("POSTGRES_USER") is not None else ""
+POSTGRES_HOST = os.getenv("POSTGRES_HOST") if os.getenv("POSTGRES_HOST") is not None else ""
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD") if os.getenv("POSTGRES_PASSWORD") is not None else ""
-POSTGRES_PORT = os.getenv("POSTGRES_PORT") if os.getenv("POSTGRES_PORT") is not None else "5432"
+POSTGRES_PORT = os.getenv("POSTGRES_PORT") if os.getenv("POSTGRES_PORT") is not None else ""
 
 CSV_LATITUDE_COLUMN = "(latitude|latitud|lat)"
 CSV_LONGITUDE_COLUMN = "(longitude|longitud|lon|lng|long)"
@@ -43,7 +43,6 @@ GEOMETRY_COLUMN_SRID = "4326"
 TEMP_FOLDER = "./tmp"
 
 WRITE_LOG = True
-
 
 # check connection with db
 try:
@@ -70,6 +69,8 @@ def main():
         printMessage("---------- Error: Archivo no encontrado")
         return
 
+    if os.path.exists(TEMP_FOLDER):
+        shutil.rmtree(TEMP_FOLDER)
 
     if fileType=="csv":
         processCSV(filePath, newTableName)
@@ -308,21 +309,35 @@ def processSHP(file, datasetName):
     if not os.path.exists(TEMP_FOLDER):
         os.makedirs(TEMP_FOLDER)
 
-    printMessage("Creando sql")
+    printMessage("Creando instrucciones sql")
 
     sqlFilePath = TEMP_FOLDER + "/commands.sql"
     sqlWriter = open(sqlFilePath, "w")
-    subprocess.call(["shp2pgsql", "-c", "-s", GEOMETRY_COLUMN_SRID, "-g", GEOMETRY_COLUMN_NAME, "-I", "-S", file, "public."+datasetName], stdout=sqlWriter)
+    # subprocess.call(["shp2pgsql", "-c", "-s", GEOMETRY_COLUMN_SRID, "-g", GEOMETRY_COLUMN_NAME, "-I", "-S", file, "public."+datasetName], stdout=sqlWriter)
+
+    # omit -S
+    subprocess.call(["shp2pgsql", "-c", "-s", GEOMETRY_COLUMN_SRID, "-g", GEOMETRY_COLUMN_NAME, "-I", file, "public."+datasetName], stdout=sqlWriter)
+
 
     sqlWriter.close()
 
-    printMessage("Ejecutando archivo")
+    with open(sqlFilePath, "r") as fp:
+        instruccions = []
 
-    sqlReader = open(sqlFilePath, "r")
+        instruction = ""
+        for line in fp:
+            instruction += line[0:-1]
 
-    cursor.execute(sqlReader.read())
+            if line[-2:-1] == ";":
+                instruccions.append(instruction)
+                instruction = ""
 
-    printMessage("Tabla creada correctamente")
+        printMessage("Ejecutando...")
+
+        for instruccion in instruccions:
+            cursor.execute(instruccion)
+
+        printMessage("Tabla creada correctamente")
 
 
 def processKML(file, datasetName, data=None, removeInvalidProperties=False):
