@@ -115,7 +115,7 @@ def processZip(file, datasetName):
         if not validFile:
             printMessage("Error: No se encontro archivo shp", True)
     except zipfile.BadZipFile as error:
-        printMessage("----------Error: El archivo no es tipo zip")
+        printMessage("Error: El archivo no es tipo zip", True)
 
 
 
@@ -325,7 +325,7 @@ def processSHP(file, datasetName):
     elif geomType == "linestring":
         coordinates = auxGeojson["geometry"]["coordinates"][0]
     else:
-        printMessage("")
+        printMessage("Error: geometria no soportada", True)
 
 
     fileToProcess = file
