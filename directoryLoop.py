@@ -15,7 +15,7 @@ def getTableName(filename):
 
 rootDirectory = sys.argv[1]
 
-processedFiles = open("processed_files", "r").read().splitlines()
+processedFiles = open("processed_files", "w+").read().splitlines()
 
 supportedTypes = ".*\.(shp|csv|kml|kmz|geojson|json|zip)"
 for root, dirnames, filenames in os.walk(rootDirectory):
