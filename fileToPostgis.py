@@ -20,6 +20,8 @@ import json
 import zipfile
 import unidecode
 
+from osgeo import ogr, osr
+
 # check inputs
 if len(sys.argv) < 3:
     print("Uso: python3 fileToPostgis.py file table_name")
@@ -27,11 +29,11 @@ if len(sys.argv) < 3:
 
 
 # setup
-POSTGRES_DBNAME = os.getenv("POSTGRES_DBNAME") if os.getenv("POSTGRES_DBNAME") is not None else ""
-POSTGRES_USER = os.getenv("POSTGRES_USER") if os.getenv("POSTGRES_USER") is not None else ""
-POSTGRES_HOST = os.getenv("POSTGRES_HOST") if os.getenv("POSTGRES_HOST") is not None else ""
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD") if os.getenv("POSTGRES_PASSWORD") is not None else ""
-POSTGRES_PORT = os.getenv("POSTGRES_PORT") if os.getenv("POSTGRES_PORT") is not None else ""
+POSTGRES_DBNAME = os.getenv("POSTGRES_DBNAME") if os.getenv("POSTGRES_DBNAME") is not None else "open_data"
+POSTGRES_USER = os.getenv("POSTGRES_USER") if os.getenv("POSTGRES_USER") is not None else "cedn_pg"
+POSTGRES_HOST = os.getenv("POSTGRES_HOST") if os.getenv("POSTGRES_HOST") is not None else "10.20.39.21"
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD") if os.getenv("POSTGRES_PASSWORD") is not None else "nZwQ9vZz53"
+POSTGRES_PORT = os.getenv("POSTGRES_PORT") if os.getenv("POSTGRES_PORT") is not None else "8005"
 
 CSV_LATITUDE_COLUMN = "(latitude|latitud|lat)"
 CSV_LONGITUDE_COLUMN = "(longitude|longitud|lon|lng|long)"
@@ -49,7 +51,7 @@ try:
     conn = psycopg2.connect(dbname=POSTGRES_DBNAME, user=POSTGRES_USER, host=POSTGRES_HOST, password=POSTGRES_PASSWORD, port=POSTGRES_PORT)
     conn.autocommit = True
 except:
-    print("---------- Error en la conexión con postgis.")
+    print("Error en la conexión con postgis.", True)
     sys.exit()
 
 
@@ -63,10 +65,10 @@ def main():
     try:
         # check if the file is empty
         if os.stat(filePath).st_size < 5: # size in bytes
-            printMessage("---------- Error: Archivo vacio")
+            printMessage("Error: Archivo vacio", True)
             return
     except:
-        printMessage("---------- Error: Archivo no encontrado")
+        printMessage("Error: Archivo no encontrado", True)
         return
 
     if os.path.exists(TEMP_FOLDER):
@@ -111,7 +113,7 @@ def processZip(file, datasetName):
                 break
 
         if not validFile:
-            printMessage("---------- Error: No se encontro archivo shp")
+            printMessage("Error: No se encontro archivo shp", True)
     except zipfile.BadZipFile as error:
         printMessage("----------Error: El archivo no es tipo zip")
 
@@ -144,7 +146,7 @@ def processGeojson(file, datasetName, data=None):
         try:
             createTable(datasetName, validColumns, columnsType)
         except psycopg2.Error as err:
-            printMessage("---------- Error creando la tabla: " + str(err))
+            printMessage("Error creando la tabla: " + str(err), True)
             return
 
         cur = conn.cursor()
@@ -190,7 +192,7 @@ def processGeojson(file, datasetName, data=None):
                         columnsCreated[geometryType] = True
 
                     except psycopg2.Error as err:
-                        printMessage("---------- Error creando columna geografica" + str(err))
+                        printMessage("Error creando columna geografica" + str(err), True)
                         return
 
 
@@ -211,7 +213,7 @@ def processGeojson(file, datasetName, data=None):
                     cur.execute(sql)
                     counter += 1
                 except:
-                    printMessage("---------- Error inserting in the table, skipping: " + sql)
+                    printMessage("Error inserting in the table, skipping: " + sql, True)
 
         if len(geometryColumns) == 1:
             # try to rename to default name
@@ -236,10 +238,10 @@ def processJSON(file, datasetName, data=None):
             try:
                 processJSON(file, datasetName, data=json.load(jsonFile))
             except:
-                printMessage("---------- Error: Archivo no valido")
+                printMessage("Error: Archivo no valido", True)
     else:
         if(len(data)==0):
-            printMessage("---------- Error: Archivo sin información")
+            printMessage("Error: Archivo sin información", True)
             return
 
         geojson = {
@@ -258,7 +260,7 @@ def processJSON(file, datasetName, data=None):
                 longitudColumn = column
 
         if latitudColumn is None or longitudColumn is None:
-            printMessage("---------- Error: No se encontro información geografica.")
+            printMessage("Error: No se encontro información geografica.", True)
             return
 
         for row in data:
@@ -287,7 +289,7 @@ def processCSV(file, datasetName, encoding="utf-8"):
             # try to parse file with another encoding
             processCSV(file, datasetName, encoding=encodingAux)
         else:
-            printMessage("---------- Error parseando el archivo")
+            printMessage("Error parseando el archivo", True)
 
         return
 
@@ -303,6 +305,43 @@ def processCSV(file, datasetName, encoding="utf-8"):
 
 
 def processSHP(file, datasetName):
+    # validate coordinates
+    driver = ogr.GetDriverByName("ESRI Shapefile")
+    dataset = driver.Open(file)
+
+    # from Layer
+    layer = dataset.GetLayer()
+    feature = layer.GetNextFeature()
+
+    auxGeojson =  json.loads(str(feature.ExportToJson()))
+
+    geomType = auxGeojson["geometry"]["type"].lower()
+
+    coordinates = None
+    if geomType == "point":
+        coordinates = auxGeojson["geometry"]["coordinates"]
+    elif geomType == "polygon":
+        coordinates = auxGeojson["geometry"]["coordinates"][0][0]
+    elif geomType == "linestring":
+        coordinates = auxGeojson["geometry"]["coordinates"][0]
+    else:
+        printMessage("")
+
+
+    fileToProcess = file
+    if not isValidProj(coordinates):
+        printMessage("Transformando proyección.")
+
+        if not os.path.exists(TEMP_FOLDER):
+            os.makedirs(TEMP_FOLDER)
+
+        # INEGI custom proj -> EPSG:4326
+        fileToProcess = TEMP_FOLDER + "/tmp_fix.shp"
+        execute = "ogr2ogr -f \"ESRI Shapefile\" -s_srs \"+proj=lcc +lat_1=17.5 +lat_2=29.5 +lat_0=12 +lon_0=-102 +x_0=2500000 +y_0=0 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs\" -t_srs \"+proj=longlat +ellps=WGS84 +no_defs +towgs84=0,0,0\" {file_output} {file}".format(file=file, file_output=fileToProcess)
+        subprocess.call(execute, shell=True)
+
+
+    # start process
     cursor = conn.cursor()
     cursor.execute("DROP TABLE IF EXISTS \"" + datasetName + "\"")
 
@@ -313,11 +352,8 @@ def processSHP(file, datasetName):
 
     sqlFilePath = TEMP_FOLDER + "/commands.sql"
     sqlWriter = open(sqlFilePath, "w")
-    # subprocess.call(["shp2pgsql", "-c", "-s", GEOMETRY_COLUMN_SRID, "-g", GEOMETRY_COLUMN_NAME, "-I", "-S", file, "public."+datasetName], stdout=sqlWriter)
 
-    # omit -S
-    subprocess.call(["shp2pgsql", "-c", "-s", GEOMETRY_COLUMN_SRID, "-g", GEOMETRY_COLUMN_NAME, "-I", file, "public."+datasetName], stdout=sqlWriter)
-
+    subprocess.call(["shp2pgsql", "-c", "-s", GEOMETRY_COLUMN_SRID, "-g", GEOMETRY_COLUMN_NAME, "-I", fileToProcess, "public."+datasetName], stdout=sqlWriter)
 
     sqlWriter.close()
 
@@ -376,12 +412,12 @@ def processKML(file, datasetName, data=None, removeInvalidProperties=False):
             processGeojson(None, datasetName, data=geojson)
         except xml.parsers.expat.ExpatError as err:
             if removeInvalidProperties:
-                printMessage("---------- Error parseando el archivo. " + str(err))
+                printMessage("Error parseando el archivo. " + str(err), True)
             else:
                 processKML(file, datasetName, data=data, removeInvalidProperties=True)
             pass
         except:
-            print("---------- Error parseando el archivo.")
+            printMessage("Error parseando el archivo.", True)
 
 
 def processKMZ(file, datasetName):
@@ -392,7 +428,7 @@ def processKMZ(file, datasetName):
                 suffix = "_" + z.filename.split(".")[-2]
                 processKML(None, datasetName+suffix, data=zip.read(z))
     except zipfile.BadZipFile as error:
-        printMessage("---------- Error: El archivo no es tipo zip")
+        printMessage("Error: El archivo no es tipo zip.", True)
 
 
 def getObjType(obj):
@@ -444,7 +480,7 @@ def analyzeTable(datasetName):
         conn.cursor().execute("VACUUM ANALYZE \"{}\"".format(datasetName))
         printMessage("tabla optimizada")
     except:
-        printMessage("---------- Error optimizando tabla. " + sql)
+        printMessage("Error optimizando tabla. " + sql, True)
 
 
 
@@ -456,7 +492,7 @@ def createIndex(datasetName, geomColumn):
         conn.cursor().execute(sql)
         printMessage("índice espacial " + indexName + " creado")
     except:
-        printMessage("---------- Error creando el índice espacial. " + sql)
+        printMessage("Error creando el índice espacial. " + sql, True)
 
 
 def createGeometryColumn(cur, datasetName, type, suffixColumn=""):
@@ -466,11 +502,22 @@ def createGeometryColumn(cur, datasetName, type, suffixColumn=""):
     cur.execute(sql.format(dataset=datasetName, geometry_column=name, srid=GEOMETRY_COLUMN_SRID, geometry=type))
     return name
 
-def printMessage(text):
+def printMessage(text, error=False):
+    text = "---------- " + text if error else text
+
     print(text)
 
     if WRITE_LOG:
         with open('output_script', 'a') as the_file:
             the_file.write(text + "\n")
+
+def isValidProj(coordinates):
+    min_y = -90.0000;
+    max_y = 90.0000;
+
+    min_x = -180.0000;
+    max_x = 180.0000;
+
+    return ( min_x <= coordinates[0] and coordinates[0] <= max_x and min_y <= coordinates[1] and coordinates[1] <= max_y )
 
 main()
