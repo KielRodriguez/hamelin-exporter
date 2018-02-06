@@ -29,11 +29,11 @@ if len(sys.argv) < 3:
 
 
 # setup
-POSTGRES_DBNAME = os.getenv("POSTGRES_DBNAME") if os.getenv("POSTGRES_DBNAME") is not None else "open_data"
-POSTGRES_USER = os.getenv("POSTGRES_USER") if os.getenv("POSTGRES_USER") is not None else "cedn_pg"
-POSTGRES_HOST = os.getenv("POSTGRES_HOST") if os.getenv("POSTGRES_HOST") is not None else "10.20.39.21"
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD") if os.getenv("POSTGRES_PASSWORD") is not None else "nZwQ9vZz53"
-POSTGRES_PORT = os.getenv("POSTGRES_PORT") if os.getenv("POSTGRES_PORT") is not None else "8005"
+POSTGRES_DBNAME = os.getenv("POSTGRES_DBNAME") if os.getenv("POSTGRES_DBNAME") is not None else ""
+POSTGRES_USER = os.getenv("POSTGRES_USER") if os.getenv("POSTGRES_USER") is not None else ""
+POSTGRES_HOST = os.getenv("POSTGRES_HOST") if os.getenv("POSTGRES_HOST") is not None else ""
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD") if os.getenv("POSTGRES_PASSWORD") is not None else ""
+POSTGRES_PORT = os.getenv("POSTGRES_PORT") if os.getenv("POSTGRES_PORT") is not None else ""
 
 CSV_LATITUDE_COLUMN = "(latitude|latitud|lat)"
 CSV_LONGITUDE_COLUMN = "(longitude|longitud|lon|lng|long)"
@@ -96,27 +96,18 @@ def main():
 
 def processZip(file, datasetName):
     #TODO: Nested search ?
-    try:
-        zip = zipfile.ZipFile(file)
-        validFile = False
-        for z in zip.filelist:
-            if z.filename[-4:] == '.shp':
-                # verify tmp file exists
-                if not os.path.exists(TEMP_FOLDER):
-                    os.makedirs(TEMP_FOLDER)
 
-                # extract zip to tmp folder
-                subprocess.run(["unzip", file, "-d", TEMP_FOLDER])
+    if not os.path.exists(TEMP_FOLDER):
+        os.makedirs(TEMP_FOLDER)
 
-                processSHP(TEMP_FOLDER + "/" + z.filename, datasetName)
-                validFile = True
-                break
+    subprocess.run(["unzip", file, "-d", TEMP_FOLDER], shell=False)
 
-        if not validFile:
-            printMessage("Error: No se encontro archivo shp", True)
-    except zipfile.BadZipFile as error:
-        printMessage("Error: El archivo no es tipo zip", True)
+    for root, dirnames, filenames in os.walk(TEMP_FOLDER):
+        for filename in filenames:
+            if filename[-4:] == '.shp':
+                resource = os.path.join(root, filename)
 
+                processSHP(resource, datasetName + "__" + getValidName(filename[:-4]))
 
 
 def processGeojson(file, datasetName, data=None):
@@ -305,40 +296,17 @@ def processCSV(file, datasetName, encoding="utf-8"):
 
 
 def processSHP(file, datasetName):
-    # validate coordinates
-    driver = ogr.GetDriverByName("ESRI Shapefile")
-    dataset = driver.Open(file)
+    # validate projection
+    projFile = file[:-4] + ".prj"
+    srid = GEOMETRY_COLUMN_SRID
 
-    # from Layer
-    layer = dataset.GetLayer()
-    feature = layer.GetNextFeature()
+    if os.path.exists(projFile):
+        proj = open(projFile).read()
 
-    auxGeojson =  json.loads(str(feature.ExportToJson()))
-
-    geomType = auxGeojson["geometry"]["type"].lower()
-
-    coordinates = None
-    if geomType == "point":
-        coordinates = auxGeojson["geometry"]["coordinates"]
-    elif geomType == "polygon":
-        coordinates = auxGeojson["geometry"]["coordinates"][0][0]
-    elif geomType == "linestring":
-        coordinates = auxGeojson["geometry"]["coordinates"][0]
+        if "MEXICO_ITRF_2008_UTM_Zone_16N" in proj:
+            srid = "4489"
     else:
-        printMessage("Error: geometria no soportada", True)
-
-
-    fileToProcess = file
-    if not isValidProj(coordinates):
-        printMessage("Transformando proyección.")
-
-        if not os.path.exists(TEMP_FOLDER):
-            os.makedirs(TEMP_FOLDER)
-
-        # INEGI custom proj -> EPSG:4326
-        fileToProcess = TEMP_FOLDER + "/tmp_fix.shp"
-        execute = "ogr2ogr -f \"ESRI Shapefile\" -s_srs \"+proj=lcc +lat_1=17.5 +lat_2=29.5 +lat_0=12 +lon_0=-102 +x_0=2500000 +y_0=0 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs\" -t_srs \"+proj=longlat +ellps=WGS84 +no_defs +towgs84=0,0,0\" {file_output} {file}".format(file=file, file_output=fileToProcess)
-        subprocess.call(execute, shell=True)
+        print("No se encontro el archivo de proyección")
 
 
     # start process
@@ -353,7 +321,7 @@ def processSHP(file, datasetName):
     sqlFilePath = TEMP_FOLDER + "/commands.sql"
     sqlWriter = open(sqlFilePath, "w")
 
-    subprocess.call(["shp2pgsql", "-c", "-s", GEOMETRY_COLUMN_SRID, "-g", GEOMETRY_COLUMN_NAME, "-I", fileToProcess, "public."+datasetName], stdout=sqlWriter)
+    subprocess.call(["shp2pgsql", "-c", "-s", srid, "-g", GEOMETRY_COLUMN_NAME, "-I", file, "public."+datasetName], stdout=sqlWriter)
 
     sqlWriter.close()
 
@@ -462,7 +430,8 @@ def getValidTextValue(text):
 
 
 def getValidName(currentName):
-    return re.compile('[^a-z0-9_]').sub("_", unidecode.unidecode(currentName).lower().strip())
+    aux =  re.compile('[^a-z0-9_]').sub("_", unidecode.unidecode(currentName).lower().strip())
+    return aux.replace("__","_")
 
 
 def createTable(datasetName, columns, columnsType):
@@ -510,14 +479,5 @@ def printMessage(text, error=False):
     if WRITE_LOG:
         with open('output_script', 'a') as the_file:
             the_file.write(text + "\n")
-
-def isValidProj(coordinates):
-    min_y = -90.0000;
-    max_y = 90.0000;
-
-    min_x = -180.0000;
-    max_x = 180.0000;
-
-    return ( min_x <= coordinates[0] and coordinates[0] <= max_x and min_y <= coordinates[1] and coordinates[1] <= max_y )
 
 main()
