@@ -18,4 +18,6 @@ RUN pip3 install lxml pandas psycopg2 kml2geojson unidecode
 # clone repo
 RUN git clone https://github.com/mxabierto/hamelin-exporter tmp/hamelin-exporter
 
-CMD ["python3", "tmp/hamelin-exporter/directoryLoop.py", $DATA_FOLDER]
+WORKDIR tmp/hamelin-exporter
+
+CMD ["python3", "directoryLoop.py", $DATA_FOLDER]
